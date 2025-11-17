@@ -1,0 +1,14 @@
+{
+  "pallets": [
+    {"id": "EUR-EPAL", "width": 1200, "depth": 800, "height": 144, "max_overhang_x": 15, "max_overhang_y": 15},
+    {"id": "IND-1000", "width": 1000, "depth": 1000, "height": 140, "max_overhang_x": 20, "max_overhang_y": 20}
+  ],
+  "boxes": [
+    {"id": "BX-400", "width": 400, "depth": 300, "height": 250, "weight": 12.5, "label_position": "front"},
+    {"id": "BX-250", "width": 250, "depth": 200, "height": 200, "weight": 7.3, "label_position": "side"}
+  ],
+  "tools": [
+    {"id": "TK-2", "name": "Presa doppia", "max_boxes": 2, "orientations": "0,90", "offset_x": 0, "offset_y": 0, "offset_z": 50},
+    {"id": "TK-4", "name": "Presa quadrupla", "max_boxes": 4, "orientations": "0", "offset_x": 5, "offset_y": 5, "offset_z": 60}
+  ]
+}
