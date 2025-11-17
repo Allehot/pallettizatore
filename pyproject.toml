@@ -1,0 +1,18 @@
+[project]
+name = "kompongo"
+version = "0.1.0"
+description = "KomPonGo palletization planner"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+kompongo = "kompongo.cli:main"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+addopts = "-q"
