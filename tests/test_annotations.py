@@ -1,4 +1,4 @@
-from kompongo import (
+from verpal import (
     ApproachConfig,
     Box,
     Dimensions,

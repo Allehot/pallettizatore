@@ -1,8 +1,8 @@
-from kompongo import DataRepository
+from verpal import DataRepository
 
 
 def test_repository_initialization(tmp_path):
-    repo = DataRepository(tmp_path / "kompongo.db")
+    repo = DataRepository(tmp_path / "verpal.db")
     repo.initialize("data/seed_data.json")
     pallet = repo.get_pallet("EUR-EPAL")
     box = repo.get_box("BX-400")
@@ -14,7 +14,7 @@ def test_repository_initialization(tmp_path):
 
 
 def test_repository_lists_entities(tmp_path):
-    repo = DataRepository(tmp_path / "kompongo.db")
+    repo = DataRepository(tmp_path / "verpal.db")
     repo.initialize("data/seed_data.json")
     pallets = repo.list_pallets()
     boxes = repo.list_boxes()
