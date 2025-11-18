@@ -1,0 +1,20 @@
+[project]
+name = "verpal"
+version = "0.1.0"
+description = "VerPal palletization planner"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "matplotlib>=3.8",
+]
+
+[project.scripts]
+verpal = "verpal.cli:main"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+addopts = "-q"
