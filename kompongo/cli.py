@@ -246,7 +246,13 @@ def run_plan(args: argparse.Namespace) -> None:
     pallet = repo.get_pallet(args.pallet)
     box = repo.get_box(args.box)
     tool = repo.get_tool(args.tool)
-    request = LayerRequest(pallet=pallet, box=box, tool=tool, start_corner=args.corner)
+    request = LayerRequest(
+        pallet=pallet,
+        box=box,
+        tool=tool,
+        pickup_offset=tool.pickup_offset,
+        start_corner=args.corner,
+    )
 
     plan = _calculate_layer(request)
     collisions = plan.collisions
@@ -320,7 +326,13 @@ def run_stack(args: argparse.Namespace) -> None:
     pallet = repo.get_pallet(args.pallet)
     box = repo.get_box(args.box)
     tool = repo.get_tool(args.tool)
-    request = LayerRequest(pallet=pallet, box=box, tool=tool, start_corner=args.corner)
+    request = LayerRequest(
+        pallet=pallet,
+        box=box,
+        tool=tool,
+        pickup_offset=tool.pickup_offset,
+        start_corner=args.corner,
+    )
 
     try:
         overrides = _parse_overrides(args.approach_override)
@@ -395,7 +407,13 @@ def run_archive(args: argparse.Namespace) -> None:
     pallet = repo.get_pallet(args.pallet)
     box = repo.get_box(args.box)
     tool = repo.get_tool(args.tool)
-    request = LayerRequest(pallet=pallet, box=box, tool=tool, start_corner=args.corner)
+    request = LayerRequest(
+        pallet=pallet,
+        box=box,
+        tool=tool,
+        pickup_offset=tool.pickup_offset,
+        start_corner=args.corner,
+    )
 
     try:
         overrides = _parse_overrides(args.approach_override)

@@ -13,11 +13,13 @@ from .metrics import compute_layer_metrics, compute_sequence_metrics
 from .models import (
     ApproachConfig,
     Box,
+    Dimensions,
     Interleaf,
     LayerPlan,
     LayerPlacement,
     LayerRequest,
     LayerSequencePlan,
+    PickupOffset,
     Pallet,
     ReferenceFrame,
     Tool,
@@ -65,6 +67,17 @@ class MetricLine:
 
     label: str
     value: str
+
+
+@dataclass(frozen=True)
+class PickSummary:
+    """Aggregate information for each pick step shown in the GUI."""
+
+    index: int
+    boxes: int
+    x: float
+    y: float
+    z: float
 
 
 _COLOR_PALETTE = [
@@ -452,6 +465,33 @@ class PalletGuiApp:
         )
         override_text = " ".join(default_approach_overrides or [])
         self.approach_override_var = tk_module.StringVar(value=override_text)
+        default_pallet = self._find_by_id(self.pallets, default_pallet_id, "Pallet")
+        default_box = self._find_by_id(self.boxes, default_box_id, "Scatola")
+        default_tool = self._find_by_id(self.tools, default_tool_id, "Tool")
+        self.pallet_width_var = tk_module.StringVar()
+        self.pallet_depth_var = tk_module.StringVar()
+        self.pallet_height_var = tk_module.StringVar()
+        self.pallet_overhang_x_var = tk_module.StringVar()
+        self.pallet_overhang_y_var = tk_module.StringVar()
+        self._apply_pallet_defaults(default_pallet)
+        self.box_width_var = tk_module.StringVar()
+        self.box_depth_var = tk_module.StringVar()
+        self.box_height_var = tk_module.StringVar()
+        self.box_weight_var = tk_module.StringVar()
+        self._apply_box_defaults(default_box)
+        self.interleaf_thickness_var = tk_module.StringVar()
+        self.interleaf_weight_var = tk_module.StringVar()
+        default_interleaf = None
+        if default_interleaf_id:
+            default_interleaf = self._find_by_id(self.interleaves, default_interleaf_id, "Interfalda")
+        self._apply_interleaf_defaults(default_interleaf)
+        self.gripper_width_var = tk_module.StringVar()
+        self.gripper_depth_var = tk_module.StringVar()
+        self.gripper_height_var = tk_module.StringVar()
+        self.multi_pick_var = tk_module.BooleanVar(value=default_tool.max_boxes > 1)
+        self.boxes_per_pick_var = tk_module.IntVar(value=max(1, default_tool.max_boxes))
+        self.pick_capacity_var = tk_module.StringVar(value="")
+        self._apply_tool_defaults(default_tool, box=default_box)
 
         try:
             self.request, self.plan, self.sequence = self._build_plan()
@@ -494,8 +534,10 @@ class PalletGuiApp:
         right.grid(row=0, column=1, sticky="nsew")
         right.rowconfigure(0, weight=0)
         right.rowconfigure(1, weight=0)
-        right.rowconfigure(2, weight=1)
+        right.rowconfigure(2, weight=0)
         right.rowconfigure(3, weight=0)
+        right.rowconfigure(4, weight=1)
+        right.rowconfigure(5, weight=0)
         right.columnconfigure(0, weight=1)
 
         config = ttk.LabelFrame(right, text="Dati disponibili nel DB")
@@ -511,7 +553,7 @@ class PalletGuiApp:
             state="readonly",
         )
         pallet_combo.grid(row=0, column=1, sticky="ew", padx=2, pady=2)
-        pallet_combo.bind("<<ComboboxSelected>>", self._on_inputs_changed)
+        pallet_combo.bind("<<ComboboxSelected>>", self._on_pallet_selected)
 
         ttk.Label(config, text="Scatola").grid(row=1, column=0, sticky="w", padx=2, pady=2)
         box_combo = ttk.Combobox(
@@ -521,7 +563,7 @@ class PalletGuiApp:
             state="readonly",
         )
         box_combo.grid(row=1, column=1, sticky="ew", padx=2, pady=2)
-        box_combo.bind("<<ComboboxSelected>>", self._on_inputs_changed)
+        box_combo.bind("<<ComboboxSelected>>", self._on_box_selected)
 
         ttk.Label(config, text="Tool").grid(row=2, column=0, sticky="w", padx=2, pady=2)
         tool_combo = ttk.Combobox(
@@ -531,7 +573,7 @@ class PalletGuiApp:
             state="readonly",
         )
         tool_combo.grid(row=2, column=1, sticky="ew", padx=2, pady=2)
-        tool_combo.bind("<<ComboboxSelected>>", self._on_inputs_changed)
+        tool_combo.bind("<<ComboboxSelected>>", self._on_tool_selected)
 
         ttk.Label(config, text="Corner iniziale").grid(
             row=3, column=0, sticky="w", padx=2, pady=2
@@ -584,7 +626,7 @@ class PalletGuiApp:
             state="readonly",
         )
         interleaf_combo.grid(row=7, column=1, sticky="ew", padx=2, pady=2)
-        interleaf_combo.bind("<<ComboboxSelected>>", self._on_inputs_changed)
+        interleaf_combo.bind("<<ComboboxSelected>>", self._on_interleaf_selected)
 
         ttk.Label(config, text="Freq. interfalda").grid(
             row=8, column=0, sticky="w", padx=2, pady=2
@@ -604,8 +646,71 @@ class PalletGuiApp:
             row=9, column=0, columnspan=2, sticky="ew", padx=2, pady=(8, 2)
         )
 
+        overrides = ttk.LabelFrame(right, text="Dimensioni personalizzate (mm)")
+        overrides.grid(row=1, column=0, sticky="ew", padx=4, pady=4)
+        overrides.columnconfigure(0, weight=1)
+
+        pallet_override = ttk.LabelFrame(overrides, text="Pallet")
+        pallet_override.grid(row=0, column=0, sticky="ew", padx=2, pady=2)
+        for i in range(2):
+            pallet_override.columnconfigure(i, weight=1)
+        ttk.Label(pallet_override, text="Larghezza").grid(row=0, column=0, sticky="w", padx=2, pady=2)
+        pallet_width_entry = ttk.Entry(pallet_override, textvariable=self.pallet_width_var)
+        pallet_width_entry.grid(row=0, column=1, sticky="ew", padx=2, pady=2)
+        self._bind_dimension_entry(pallet_width_entry)
+        ttk.Label(pallet_override, text="Profondità").grid(row=1, column=0, sticky="w", padx=2, pady=2)
+        pallet_depth_entry = ttk.Entry(pallet_override, textvariable=self.pallet_depth_var)
+        pallet_depth_entry.grid(row=1, column=1, sticky="ew", padx=2, pady=2)
+        self._bind_dimension_entry(pallet_depth_entry)
+        ttk.Label(pallet_override, text="Altezza").grid(row=2, column=0, sticky="w", padx=2, pady=2)
+        pallet_height_entry = ttk.Entry(pallet_override, textvariable=self.pallet_height_var)
+        pallet_height_entry.grid(row=2, column=1, sticky="ew", padx=2, pady=2)
+        self._bind_dimension_entry(pallet_height_entry)
+        ttk.Label(pallet_override, text="Sbordo X").grid(row=3, column=0, sticky="w", padx=2, pady=2)
+        pallet_ox_entry = ttk.Entry(pallet_override, textvariable=self.pallet_overhang_x_var)
+        pallet_ox_entry.grid(row=3, column=1, sticky="ew", padx=2, pady=2)
+        self._bind_dimension_entry(pallet_ox_entry)
+        ttk.Label(pallet_override, text="Sbordo Y").grid(row=4, column=0, sticky="w", padx=2, pady=2)
+        pallet_oy_entry = ttk.Entry(pallet_override, textvariable=self.pallet_overhang_y_var)
+        pallet_oy_entry.grid(row=4, column=1, sticky="ew", padx=2, pady=2)
+        self._bind_dimension_entry(pallet_oy_entry)
+
+        box_override = ttk.LabelFrame(overrides, text="Scatola")
+        box_override.grid(row=1, column=0, sticky="ew", padx=2, pady=2)
+        for i in range(2):
+            box_override.columnconfigure(i, weight=1)
+        ttk.Label(box_override, text="Larghezza").grid(row=0, column=0, sticky="w", padx=2, pady=2)
+        box_width_entry = ttk.Entry(box_override, textvariable=self.box_width_var)
+        box_width_entry.grid(row=0, column=1, sticky="ew", padx=2, pady=2)
+        self._bind_dimension_entry(box_width_entry)
+        ttk.Label(box_override, text="Profondità").grid(row=1, column=0, sticky="w", padx=2, pady=2)
+        box_depth_entry = ttk.Entry(box_override, textvariable=self.box_depth_var)
+        box_depth_entry.grid(row=1, column=1, sticky="ew", padx=2, pady=2)
+        self._bind_dimension_entry(box_depth_entry)
+        ttk.Label(box_override, text="Altezza").grid(row=2, column=0, sticky="w", padx=2, pady=2)
+        box_height_entry = ttk.Entry(box_override, textvariable=self.box_height_var)
+        box_height_entry.grid(row=2, column=1, sticky="ew", padx=2, pady=2)
+        self._bind_dimension_entry(box_height_entry)
+        ttk.Label(box_override, text="Peso (kg)").grid(row=3, column=0, sticky="w", padx=2, pady=2)
+        box_weight_entry = ttk.Entry(box_override, textvariable=self.box_weight_var)
+        box_weight_entry.grid(row=3, column=1, sticky="ew", padx=2, pady=2)
+        self._bind_dimension_entry(box_weight_entry)
+
+        interleaf_override = ttk.LabelFrame(overrides, text="Interfalda")
+        interleaf_override.grid(row=2, column=0, sticky="ew", padx=2, pady=2)
+        for i in range(2):
+            interleaf_override.columnconfigure(i, weight=1)
+        ttk.Label(interleaf_override, text="Spessore").grid(row=0, column=0, sticky="w", padx=2, pady=2)
+        interleaf_th_entry = ttk.Entry(interleaf_override, textvariable=self.interleaf_thickness_var)
+        interleaf_th_entry.grid(row=0, column=1, sticky="ew", padx=2, pady=2)
+        self._bind_dimension_entry(interleaf_th_entry)
+        ttk.Label(interleaf_override, text="Peso (kg)").grid(row=1, column=0, sticky="w", padx=2, pady=2)
+        interleaf_weight_entry = ttk.Entry(interleaf_override, textvariable=self.interleaf_weight_var)
+        interleaf_weight_entry.grid(row=1, column=1, sticky="ew", padx=2, pady=2)
+        self._bind_dimension_entry(interleaf_weight_entry)
+
         approach = ttk.LabelFrame(right, text="Accostamento e annotazioni")
-        approach.grid(row=1, column=0, sticky="ew", padx=4, pady=4)
+        approach.grid(row=2, column=0, sticky="ew", padx=4, pady=4)
         for i in range(2):
             approach.columnconfigure(i, weight=1)
         ttk.Label(approach, text="Direzione (lascia vuoto per usare il corner)").grid(
@@ -651,8 +756,69 @@ class PalletGuiApp:
             row=4, column=1, sticky="ew", padx=2, pady=(4, 2)
         )
 
+        gripper_frame = ttk.LabelFrame(right, text="Pinza di presa e prese")
+        gripper_frame.grid(row=3, column=0, sticky="ew", padx=4, pady=4)
+        for i in range(2):
+            gripper_frame.columnconfigure(i, weight=1)
+        ttk.Label(gripper_frame, text="Larghezza pinza (mm)").grid(row=0, column=0, sticky="w", padx=2, pady=2)
+        gripper_width_entry = ttk.Entry(gripper_frame, textvariable=self.gripper_width_var)
+        gripper_width_entry.grid(row=0, column=1, sticky="ew", padx=2, pady=2)
+        self._bind_dimension_entry(gripper_width_entry)
+        ttk.Label(gripper_frame, text="Profondità pinza (mm)").grid(row=1, column=0, sticky="w", padx=2, pady=2)
+        gripper_depth_entry = ttk.Entry(gripper_frame, textvariable=self.gripper_depth_var)
+        gripper_depth_entry.grid(row=1, column=1, sticky="ew", padx=2, pady=2)
+        self._bind_dimension_entry(gripper_depth_entry)
+        ttk.Label(gripper_frame, text="Quota presa Z (mm)").grid(row=2, column=0, sticky="w", padx=2, pady=2)
+        gripper_height_entry = ttk.Entry(gripper_frame, textvariable=self.gripper_height_var)
+        gripper_height_entry.grid(row=2, column=1, sticky="ew", padx=2, pady=2)
+        self._bind_dimension_entry(gripper_height_entry)
+        multi_pick = ttk.Checkbutton(
+            gripper_frame,
+            text="Abilita presa multipla",
+            variable=self.multi_pick_var,
+            command=self._on_inputs_changed,
+        )
+        multi_pick.grid(row=3, column=0, sticky="w", padx=2, pady=2)
+        ttk.Label(gripper_frame, text="Scatole per presa").grid(row=4, column=0, sticky="w", padx=2, pady=2)
+        boxes_spin = tk_module.Spinbox(
+            gripper_frame,
+            from_=1,
+            to=50,
+            textvariable=self.boxes_per_pick_var,
+            width=6,
+            command=self._on_inputs_changed,
+        )
+        boxes_spin.grid(row=4, column=1, sticky="e", padx=2, pady=2)
+        boxes_spin.bind("<Return>", self._on_inputs_changed)
+        self.pick_capacity_label = ttk.Label(gripper_frame, textvariable=self.pick_capacity_var)
+        self.pick_capacity_label.grid(row=5, column=0, columnspan=2, sticky="w", padx=2, pady=(0, 4))
+        pick_table_frame = ttk.LabelFrame(gripper_frame, text="Tabella riepilogativa prese")
+        pick_table_frame.grid(row=6, column=0, columnspan=2, sticky="ew", padx=2, pady=2)
+        pick_table_frame.columnconfigure(0, weight=1)
+        columns = ("pick", "boxes", "x", "y", "z")
+        self.pick_tree = ttk.Treeview(
+            pick_table_frame,
+            columns=columns,
+            show="headings",
+            height=5,
+        )
+        headings = {
+            "pick": "Presa",
+            "boxes": "Scatole",
+            "x": "X (mm)",
+            "y": "Y (mm)",
+            "z": "Z (mm)",
+        }
+        for column, title in headings.items():
+            self.pick_tree.heading(column, text=title)
+            self.pick_tree.column(column, width=100)
+        self.pick_tree.grid(row=0, column=0, sticky="ew")
+        pick_scroll = ttk.Scrollbar(pick_table_frame, orient="vertical", command=self.pick_tree.yview)
+        pick_scroll.grid(row=0, column=1, sticky="ns")
+        self.pick_tree.configure(yscrollcommand=pick_scroll.set)
+
         info_panel = ttk.Frame(right)
-        info_panel.grid(row=2, column=0, sticky="nsew", padx=4)
+        info_panel.grid(row=4, column=0, sticky="nsew", padx=4)
         info_panel.rowconfigure(0, weight=1)
         info_panel.rowconfigure(1, weight=0)
         info_panel.columnconfigure(0, weight=1)
@@ -689,7 +855,7 @@ class PalletGuiApp:
         self.placement_tree.configure(yscrollcommand=tree_scroll.set)
 
         metrics_frame = ttk.LabelFrame(right, text="Metriche e export")
-        metrics_frame.grid(row=3, column=0, sticky="ew", padx=4, pady=4)
+        metrics_frame.grid(row=5, column=0, sticky="ew", padx=4, pady=4)
         metrics_frame.columnconfigure(0, weight=1)
         metrics_frame.columnconfigure(1, weight=1)
         self.metrics_var = tk_module.StringVar()
@@ -717,6 +883,7 @@ class PalletGuiApp:
         )
 
         self._refresh_annotations()
+        self._refresh_pick_summary()
         self._refresh_metrics()
         self._render_3d()
 
@@ -726,6 +893,7 @@ class PalletGuiApp:
     def _on_canvas_change(self, _plan: LayerPlan) -> None:  # pragma: no cover - UI callback
         self.canvas.refresh()
         self._refresh_annotations()
+        self._refresh_pick_summary()
         self._refresh_metrics()
         self._render_3d()
 
@@ -864,13 +1032,17 @@ class PalletGuiApp:
         return request, plan, sequence
 
     def _build_request(self) -> LayerRequest:
-        pallet = self._find_by_id(self.pallets, self.pallet_var.get(), "Pallet")
-        box = self._find_by_id(self.boxes, self.box_var.get(), "Scatola")
+        base_pallet = self._find_by_id(self.pallets, self.pallet_var.get(), "Pallet")
+        base_box = self._find_by_id(self.boxes, self.box_var.get(), "Scatola")
         tool = self._find_by_id(self.tools, self.tool_var.get(), "Tool")
+        pallet = self._custom_pallet(base_pallet)
+        box = self._custom_box(base_box)
+        pickup_offset = self._custom_pickup_offset(tool)
         return LayerRequest(
             pallet=pallet,
             box=box,
             tool=tool,
+            pickup_offset=pickup_offset,
             start_corner=(self.corner_var.get() or "SW").upper(),
             reference_frame=self.reference_frame,
         )
@@ -879,7 +1051,85 @@ class PalletGuiApp:
         value = self.interleaf_var.get()
         if not value or value == self._NO_INTERLEAF_VALUE:
             return None
-        return self._find_by_id(self.interleaves, value, "Interfalda")
+        base_interleaf = self._find_by_id(self.interleaves, value, "Interfalda")
+        return self._custom_interleaf(base_interleaf)
+
+    def _custom_pallet(self, pallet: Pallet) -> Pallet:
+        width = self._positive_override(
+            self.pallet_width_var.get(), pallet.dimensions.width, "La larghezza del pallet"
+        )
+        depth = self._positive_override(
+            self.pallet_depth_var.get(), pallet.dimensions.depth, "La profondità del pallet"
+        )
+        height = self._positive_override(
+            self.pallet_height_var.get(), pallet.dimensions.height, "L'altezza del pallet"
+        )
+        overhang_x = self._non_negative_override(
+            self.pallet_overhang_x_var.get(), pallet.max_overhang_x, "Lo sbordo X"
+        )
+        overhang_y = self._non_negative_override(
+            self.pallet_overhang_y_var.get(), pallet.max_overhang_y, "Lo sbordo Y"
+        )
+        return Pallet(
+            id=pallet.id,
+            dimensions=Dimensions(width=width, depth=depth, height=height),
+            max_overhang_x=overhang_x,
+            max_overhang_y=overhang_y,
+        )
+
+    def _custom_box(self, box: Box) -> Box:
+        width = self._positive_override(
+            self.box_width_var.get(), box.dimensions.width, "La larghezza della scatola"
+        )
+        depth = self._positive_override(
+            self.box_depth_var.get(), box.dimensions.depth, "La profondità della scatola"
+        )
+        height = self._positive_override(
+            self.box_height_var.get(), box.dimensions.height, "L'altezza della scatola"
+        )
+        weight = self._positive_override(self.box_weight_var.get(), box.weight, "Il peso della scatola")
+        return Box(
+            id=box.id,
+            dimensions=Dimensions(width=width, depth=depth, height=height),
+            weight=weight,
+            label_position=box.label_position,
+        )
+
+    def _custom_interleaf(self, interleaf: Interleaf) -> Interleaf:
+        thickness = self._positive_override(
+            self.interleaf_thickness_var.get(), interleaf.thickness, "Lo spessore dell'interfalda"
+        )
+        weight = self._positive_override(
+            self.interleaf_weight_var.get(), interleaf.weight, "Il peso dell'interfalda"
+        )
+        return Interleaf(
+            id=interleaf.id,
+            thickness=thickness,
+            weight=weight,
+            material=interleaf.material,
+        )
+
+    def _custom_pickup_offset(self, tool: Tool) -> PickupOffset:
+        z_value = self._non_negative_override(
+            self.gripper_height_var.get(), tool.pickup_offset.z, "La quota Z di presa"
+        )
+        return PickupOffset(x=tool.pickup_offset.x, y=tool.pickup_offset.y, z=z_value)
+
+    def _positive_override(self, raw: str, fallback: float, label: str) -> float:
+        value = self._parse_float(raw)
+        if value is None:
+            return fallback
+        if value <= 0:
+            raise ValueError(f"{label} deve essere maggiore di zero")
+        return value
+
+    def _non_negative_override(self, raw: str, fallback: float, label: str) -> float:
+        value = self._parse_float(raw)
+        if value is None:
+            return fallback
+        if value < 0:
+            raise ValueError(f"{label} deve essere maggiore o uguale a zero")
+        return value
 
     def _resolve_approach_settings(self) -> tuple[str, float, dict[str, ApproachConfig], bool]:
         raw_direction = (self.approach_direction_var.get() or "").strip().upper()
@@ -916,6 +1166,7 @@ class PalletGuiApp:
         self.canvas.plan = plan
         self.canvas.refresh()
         self._refresh_annotations()
+        self._refresh_pick_summary()
         self._refresh_metrics()
         self._render_3d()
         self.status_var.set(
@@ -940,6 +1191,70 @@ class PalletGuiApp:
         if not text:
             return None
         return float(text)
+
+    def _apply_pallet_defaults(self, pallet: Pallet) -> None:
+        self.pallet_width_var.set(f"{pallet.dimensions.width:.1f}")
+        self.pallet_depth_var.set(f"{pallet.dimensions.depth:.1f}")
+        self.pallet_height_var.set(f"{pallet.dimensions.height:.1f}")
+        self.pallet_overhang_x_var.set(f"{pallet.max_overhang_x:.1f}")
+        self.pallet_overhang_y_var.set(f"{pallet.max_overhang_y:.1f}")
+
+    def _apply_box_defaults(self, box: Box) -> None:
+        self.box_width_var.set(f"{box.dimensions.width:.1f}")
+        self.box_depth_var.set(f"{box.dimensions.depth:.1f}")
+        self.box_height_var.set(f"{box.dimensions.height:.1f}")
+        self.box_weight_var.set(f"{box.weight:.2f}")
+        self._maybe_update_gripper_from_box(box)
+
+    def _apply_interleaf_defaults(self, interleaf: Interleaf | None) -> None:
+        if interleaf is None:
+            self.interleaf_thickness_var.set("")
+            self.interleaf_weight_var.set("")
+            return
+        self.interleaf_thickness_var.set(f"{interleaf.thickness:.1f}")
+        self.interleaf_weight_var.set(f"{interleaf.weight:.2f}")
+
+    def _apply_tool_defaults(self, tool: Tool, box: Box | None = None) -> None:
+        self.gripper_height_var.set(f"{tool.pickup_offset.z:.1f}")
+        self.multi_pick_var.set(tool.max_boxes > 1)
+        self.boxes_per_pick_var.set(max(1, tool.max_boxes))
+        if box is not None:
+            self._maybe_update_gripper_from_box(box)
+
+    def _maybe_update_gripper_from_box(self, box: Box) -> None:
+        if not self.gripper_width_var.get().strip():
+            self.gripper_width_var.set(f"{box.dimensions.width:.1f}")
+        if not self.gripper_depth_var.get().strip():
+            self.gripper_depth_var.set(f"{box.dimensions.depth:.1f}")
+
+    def _bind_dimension_entry(self, entry) -> None:
+        entry.bind("<Return>", self._on_inputs_changed)
+        entry.bind("<FocusOut>", self._on_inputs_changed)
+
+    def _on_pallet_selected(self, *_):  # pragma: no cover - UI callback
+        pallet = self._find_by_id(self.pallets, self.pallet_var.get(), "Pallet")
+        self._apply_pallet_defaults(pallet)
+        self._on_inputs_changed()
+
+    def _on_box_selected(self, *_):  # pragma: no cover - UI callback
+        box = self._find_by_id(self.boxes, self.box_var.get(), "Scatola")
+        self._apply_box_defaults(box)
+        self._on_inputs_changed()
+
+    def _on_tool_selected(self, *_):  # pragma: no cover - UI callback
+        tool = self._find_by_id(self.tools, self.tool_var.get(), "Tool")
+        box = self._find_by_id(self.boxes, self.box_var.get(), "Scatola")
+        self._apply_tool_defaults(tool, box=box)
+        self._on_inputs_changed()
+
+    def _on_interleaf_selected(self, *_):  # pragma: no cover - UI callback
+        value = self.interleaf_var.get()
+        if not value or value == self._NO_INTERLEAF_VALUE:
+            self._apply_interleaf_defaults(None)
+        else:
+            interleaf = self._find_by_id(self.interleaves, value, "Interfalda")
+            self._apply_interleaf_defaults(interleaf)
+        self._on_inputs_changed()
 
     def _draw_box(self, placement: LayerPlacement) -> None:  # pragma: no cover - UI drawing
         physical = self.request.reference_frame.restore(
@@ -1021,6 +1336,99 @@ class PalletGuiApp:
                     ),
                 ),
             )
+
+    def _refresh_pick_summary(self) -> None:
+        if not hasattr(self, "pick_tree"):
+            return
+        for child in self.pick_tree.get_children():
+            self.pick_tree.delete(child)
+        summaries = self._build_pick_summaries()
+        for summary in summaries:
+            self.pick_tree.insert(
+                "",
+                "end",
+                values=(
+                    summary.index,
+                    summary.boxes,
+                    f"{summary.x:.1f}",
+                    f"{summary.y:.1f}",
+                    f"{summary.z:.1f}",
+                ),
+            )
+        self._update_pick_capacity_label()
+
+    def _build_pick_summaries(self) -> list[PickSummary]:
+        if not getattr(self, "plan", None):
+            return []
+        placements = sorted(self.plan.placements, key=lambda placement: placement.sequence_index)
+        if not placements:
+            return []
+        group_size = self._pick_group_size()
+        summaries: list[PickSummary] = []
+        for idx, start in enumerate(range(0, len(placements), group_size), start=1):
+            chunk = placements[start : start + group_size]
+            centers = [self._restore_position(item.position) for item in chunk]
+            avg_x = sum(point.x for point in centers) / len(centers)
+            avg_y = sum(point.y for point in centers) / len(centers)
+            avg_z = sum(item.position.z for item in chunk) / len(chunk)
+            summaries.append(
+                PickSummary(
+                    index=idx,
+                    boxes=len(chunk),
+                    x=avg_x,
+                    y=avg_y,
+                    z=avg_z,
+                )
+            )
+        return summaries
+
+    def _pick_group_size(self) -> int:
+        if not getattr(self, "request", None):
+            return 1
+        if not self.multi_pick_var.get():
+            return 1
+        requested = self._boxes_per_pick_value()
+        tool_limit = max(1, getattr(self.request.tool, "max_boxes", 1))
+        capacity = self._estimated_pick_capacity()
+        max_allowed = tool_limit
+        if capacity is not None:
+            max_allowed = min(tool_limit, max(1, capacity))
+        return max(1, min(requested, max_allowed))
+
+    def _boxes_per_pick_value(self) -> int:
+        try:
+            return max(1, int(self.boxes_per_pick_var.get() or 1))
+        except Exception:
+            return 1
+
+    def _estimated_pick_capacity(self) -> int | None:
+        if not getattr(self, "request", None):
+            return None
+        width = self._parse_float(self.gripper_width_var.get())
+        depth = self._parse_float(self.gripper_depth_var.get())
+        if width is None or depth is None or width <= 0 or depth <= 0:
+            return None
+        box_width = self.request.box.dimensions.width
+        box_depth = self.request.box.dimensions.depth
+        if box_width <= 0 or box_depth <= 0:
+            return None
+        columns = int(width // box_width)
+        rows = int(depth // box_depth)
+        capacity = columns * rows
+        return capacity if capacity > 0 else 1
+
+    def _update_pick_capacity_label(self) -> None:
+        if not hasattr(self, "pick_capacity_var"):
+            return
+        capacity = self._estimated_pick_capacity()
+        tool_limit = getattr(self.request.tool, "max_boxes", None) if hasattr(self, "request") else None
+        if capacity is None:
+            self.pick_capacity_var.set(
+                "Inserire larghezza e profondità pinza per stimare la presa multipla"
+            )
+            return
+        limit_text = f" (limite tool {tool_limit})" if tool_limit else ""
+        self.pick_capacity_var.set(f"Capacità stimata: {capacity} scatole{limit_text}")
 
     def _refresh_metrics(self) -> None:
         lines = build_metric_summary(self.plan, self.sequence)

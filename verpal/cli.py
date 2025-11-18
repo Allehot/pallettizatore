@@ -479,6 +479,7 @@ def run_plc(args: argparse.Namespace) -> None:
         pallet=pallet,
         box=box,
         tool=tool,
+        pickup_offset=tool.pickup_offset,
         start_corner=args.corner,
         reference_frame=reference_frame,
     )
@@ -542,6 +543,7 @@ def run_plan(args: argparse.Namespace) -> None:
         pallet=pallet,
         box=box,
         tool=tool,
+        pickup_offset=tool.pickup_offset,
         start_corner=args.corner,
         reference_frame=reference_frame,
     )
@@ -635,6 +637,7 @@ def run_stack(args: argparse.Namespace) -> None:
         pallet=pallet,
         box=box,
         tool=tool,
+        pickup_offset=tool.pickup_offset,
         start_corner=args.corner,
         reference_frame=reference_frame,
     )
@@ -740,6 +743,7 @@ def run_archive(args: argparse.Namespace) -> None:
         pallet=pallet,
         box=box,
         tool=tool,
+        pickup_offset=tool.pickup_offset,
         start_corner=args.corner,
         reference_frame=reference_frame,
     )
@@ -890,6 +894,7 @@ def run_analyze(args: argparse.Namespace) -> None:
         pallet=pallet,
         box=box,
         tool=tool,
+        pickup_offset=tool.pickup_offset,
         start_corner=args.corner,
         reference_frame=reference_frame,
     )
