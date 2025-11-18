@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import json
+from pathlib import Path
+from typing import Iterable
+
 from .approach import apply_approach, parse_approach_overrides
 
 from .annotations import PlacementAnnotator
@@ -21,6 +25,7 @@ from .models import (
 from .plc import SiemensPLCExporter
 from .planner import RecursiveFiveBlockPlanner
 from .project import ProjectArchiver
+from .render3d import export_sequence_to_obj, list_color_palettes
 from .repository import DataRepository
 from .sequence import LayerSequencePlanner
 from .snap import SnapPointGenerator
@@ -156,6 +161,66 @@ def build_parser() -> argparse.ArgumentParser:
         default="data/seed_data.json",
         help="Seed data path (crea il db se necessario)",
     )
+    catalog_parser.add_argument(
+        "--format",
+        choices=["table", "json"],
+        default="table",
+        help="Formato di output (tabella leggibile o JSON)",
+    )
+    catalog_parser.add_argument(
+        "--filter",
+        help="Filtra i risultati per ID/nome (match case-insensitive)",
+    )
+    catalog_parser.add_argument(
+        "--stats",
+        action="store_true",
+        help="Mostra anche un riepilogo numerico dei dati",
+    )
+
+    render_parser = sub.add_parser(
+        "render",
+        help="Esporta un modello 3D (Wavefront OBJ/MTL) dello strato o sequenza",
+    )
+    render_parser.add_argument("--pallet", required=True, help="Pallet id")
+    render_parser.add_argument("--box", required=True, help="Box id")
+    render_parser.add_argument("--tool", required=True, help="Tool id")
+    render_parser.add_argument("--corner", default="SW", help="Corner iniziale")
+    render_parser.add_argument("--layers", type=int, default=1, help="Numero di strati")
+    render_parser.add_argument("--corners", nargs="*", help="Corner per ogni livello")
+    render_parser.add_argument("--z-step", type=float, help="Incremento Z personalizzato")
+    render_parser.add_argument(
+        "--explode-gap",
+        type=float,
+        default=0.0,
+        help="Distacco verticale extra tra gli strati esportati (mm)",
+    )
+    render_parser.add_argument(
+        "--skip-pallet",
+        action="store_true",
+        help="Non includere il solido del pallet nel modello",
+    )
+    render_parser.add_argument("--output", required=True, help="Percorso file OBJ")
+    render_parser.add_argument(
+        "--mtl",
+        help="Percorso file MTL (default accanto al file OBJ)",
+    )
+    render_parser.add_argument(
+        "--palette",
+        choices=list_color_palettes(),
+        default="classic",
+        help="Palette colori da utilizzare per i layer",
+    )
+    render_parser.add_argument(
+        "--no-materials",
+        action="store_true",
+        help="Disabilita la generazione del file MTL e delle info colore",
+    )
+    _add_reference_args(render_parser)
+    _add_pallet_override_args(render_parser)
+    _add_box_override_args(render_parser)
+    _add_interleaf_args(render_parser)
+    render_parser.add_argument("--db", default="verpal.db", help="Percorso database")
+    render_parser.add_argument("--seed", default="data/seed_data.json", help="Seed data path")
 
     gui_parser = sub.add_parser(
         "gui",
@@ -398,60 +463,217 @@ def _print_table(headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> None:
 def run_catalog(args: argparse.Namespace) -> None:
     repo = DataRepository(args.db)
     repo.initialize(args.seed)
+    records: list[dict]
+    rows: list[tuple[str, ...]]
+    show_stats = bool(getattr(args, "stats", False))
     if args.entity == "pallets":
         pallets = repo.list_pallets()
+        records = [
+            {
+                "id": pallet.id,
+                "width_mm": pallet.dimensions.width,
+                "depth_mm": pallet.dimensions.depth,
+                "height_mm": pallet.dimensions.height,
+                "max_overhang_x_mm": pallet.max_overhang_x,
+                "max_overhang_y_mm": pallet.max_overhang_y,
+            }
+            for pallet in pallets
+        ]
+        records = _apply_catalog_filter(records, args.filter, ("id",))
         rows = [
             (
-                pallet.id,
-                f"{pallet.dimensions.width:.0f}x{pallet.dimensions.depth:.0f}x{pallet.dimensions.height:.0f}",
-                f"±X {pallet.max_overhang_x:.0f} | ±Y {pallet.max_overhang_y:.0f}",
+                record["id"],
+                f"{record['width_mm']:.0f}x{record['depth_mm']:.0f}x{record['height_mm']:.0f}",
+                f"±X {record['max_overhang_x_mm']:.0f} | ±Y {record['max_overhang_y_mm']:.0f}",
             )
-            for pallet in pallets
+            for record in records
         ]
         headers = ("ID", "Dimensioni (mm)", "Sbordo max (mm)")
     elif args.entity == "boxes":
         boxes = repo.list_boxes()
+        records = [
+            {
+                "id": box.id,
+                "width_mm": box.dimensions.width,
+                "depth_mm": box.dimensions.depth,
+                "height_mm": box.dimensions.height,
+                "weight_kg": box.weight,
+                "label_position": box.label_position,
+            }
+            for box in boxes
+        ]
+        records = _apply_catalog_filter(records, args.filter, ("id", "label_position"))
         rows = [
             (
-                box.id,
-                f"{box.dimensions.width:.0f}x{box.dimensions.depth:.0f}x{box.dimensions.height:.0f}",
-                f"{box.weight:.2f}kg",
-                box.label_position or "-",
+                record["id"],
+                f"{record['width_mm']:.0f}x{record['depth_mm']:.0f}x{record['height_mm']:.0f}",
+                f"{record['weight_kg']:.2f}kg",
+                record["label_position"] or "-",
             )
-            for box in boxes
+            for record in records
         ]
         headers = ("ID", "Dimensioni (mm)", "Peso", "Etichetta")
     elif args.entity == "tools":
         tools = repo.list_tools()
+        records = [
+            {
+                "id": tool.id,
+                "name": tool.name,
+                "max_boxes": tool.max_boxes,
+                "allowed_orientations": list(tool.allowed_orientations),
+                "pickup_offset_mm": {
+                    "x": tool.pickup_offset.x,
+                    "y": tool.pickup_offset.y,
+                    "z": tool.pickup_offset.z,
+                },
+            }
+            for tool in tools
+        ]
+        records = _apply_catalog_filter(records, args.filter, ("id", "name", "allowed_orientations"))
         rows = [
             (
-                tool.id,
-                tool.name,
-                str(tool.max_boxes),
-                ",".join(str(value) for value in tool.allowed_orientations) or "-",
-                f"({tool.pickup_offset.x:.0f},{tool.pickup_offset.y:.0f},{tool.pickup_offset.z:.0f})",
+                record["id"],
+                record["name"],
+                str(record["max_boxes"]),
+                ",".join(str(value) for value in record["allowed_orientations"]) or "-",
+                "({x:.0f},{y:.0f},{z:.0f})".format(**record["pickup_offset_mm"]),
             )
-            for tool in tools
+            for record in records
         ]
         headers = ("ID", "Nome", "# Scatole", "Orientazioni", "Offset (mm)")
     else:
         interleaves = repo.list_interleaves()
+        records = [
+            {
+                "id": interleaf.id,
+                "thickness_mm": interleaf.thickness,
+                "weight_kg": interleaf.weight,
+                "material": interleaf.material,
+            }
+            for interleaf in interleaves
+        ]
+        records = _apply_catalog_filter(records, args.filter, ("id", "material"))
         rows = [
             (
-                interleaf.id,
-                f"{interleaf.thickness:.1f}mm",
-                f"{interleaf.weight:.2f}kg",
-                interleaf.material,
+                record["id"],
+                f"{record['thickness_mm']:.1f}mm",
+                f"{record['weight_kg']:.2f}kg",
+                record["material"],
             )
-            for interleaf in interleaves
+            for record in records
         ]
         headers = ("ID", "Spessore", "Peso", "Materiale")
 
-    if rows:
-        _print_table(headers, rows)
+    summary = _catalog_summary(args.entity, records) if show_stats else None
+
+    if args.format == "json":
+        payload: dict | list
+        if summary is None:
+            payload = records
+        else:
+            payload = {"records": records, "stats": summary}
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
     else:
-        print("Nessun dato disponibile")
+        if rows:
+            _print_table(headers, rows)
+        else:
+            print("Nessun dato disponibile")
+        if summary:
+            print("\nStatistiche catalogo:")
+            for key, value in summary.items():
+                if key == "count":
+                    label = "Totale elementi"
+                else:
+                    label = key.replace("_", " ").capitalize()
+                print(f"  - {label}: {_format_stat_value(value)}")
     repo.close()
+
+
+def _catalog_summary(entity: str, records: list[dict]) -> dict[str, float | int]:
+    summary: dict[str, float | int] = {"count": len(records)}
+    if not records:
+        return summary
+    if entity == "pallets":
+        summary.update(
+            {
+                "avg_width_mm": _mean(record["width_mm"] for record in records),
+                "avg_depth_mm": _mean(record["depth_mm"] for record in records),
+                "avg_overhang_x_mm": _mean(record["max_overhang_x_mm"] for record in records),
+            }
+        )
+    elif entity == "boxes":
+        summary.update(
+            {
+                "avg_weight_kg": _mean(record["weight_kg"] for record in records),
+                "avg_height_mm": _mean(record["height_mm"] for record in records),
+            }
+        )
+    elif entity == "tools":
+        unique_orientations = {
+            str(orientation)
+            for record in records
+            for orientation in record.get("allowed_orientations", [])
+        }
+        summary.update(
+            {
+                "avg_capacity": _mean(record["max_boxes"] for record in records),
+                "unique_orientations": len(unique_orientations),
+            }
+        )
+    else:
+        summary.update(
+            {
+                "avg_thickness_mm": _mean(record["thickness_mm"] for record in records),
+                "avg_weight_kg": _mean(record["weight_kg"] for record in records),
+            }
+        )
+    return summary
+
+
+def _mean(values: Iterable[float]) -> float:
+    data = list(values)
+    if not data:
+        return 0.0
+    return sum(data) / len(data)
+
+
+def _format_stat_value(value: float | int) -> str:
+    if isinstance(value, float):
+        return f"{value:.2f}"
+    return str(value)
+
+
+def _apply_catalog_filter(
+    records: list[dict],
+    needle: str | None,
+    fields: tuple[str, ...],
+) -> list[dict]:
+    if not needle:
+        return records
+    lowered = needle.strip().lower()
+    if not lowered:
+        return records
+    filtered: list[dict] = []
+    for record in records:
+        if _record_matches(record, lowered, fields):
+            filtered.append(record)
+    return filtered
+
+
+def _record_matches(record: dict, needle: str, fields: tuple[str, ...]) -> bool:
+    for field in fields:
+        value = record.get(field)
+        if value is None:
+            continue
+        values: list[str]
+        if isinstance(value, (list, tuple, set)):
+            values = [str(entry).lower() for entry in value]
+        else:
+            values = [str(value).lower()]
+        for text in values:
+            if needle in text:
+                return True
+    return False
 
 
 def run_plc(args: argparse.Namespace) -> None:
@@ -717,6 +939,79 @@ def run_stack(args: argparse.Namespace) -> None:
     repo.close()
 
 
+def run_render(args: argparse.Namespace) -> None:
+    repo = DataRepository(args.db)
+    repo.initialize(args.seed)
+    try:
+        pallet = _resolve_pallet(repo, args)
+        box = _resolve_box(repo, args)
+    except ValueError as exc:
+        repo.close()
+        raise SystemExit(str(exc)) from exc
+    tool = repo.get_tool(args.tool)
+    try:
+        interleaf = _resolve_interleaf(repo, args)
+    except KeyError as exc:
+        repo.close()
+        raise SystemExit(str(exc)) from exc
+    try:
+        reference_frame = _reference_frame_from_args(args.origin, args.axes)
+    except ValueError as exc:  # pragma: no cover - defensive user input
+        repo.close()
+        raise SystemExit(str(exc)) from exc
+
+    request = LayerRequest(
+        pallet=pallet,
+        box=box,
+        tool=tool,
+        start_corner=args.corner,
+        reference_frame=reference_frame,
+    )
+    sequence_planner = LayerSequencePlanner()
+    collision_checker = CollisionChecker()
+    sequence = sequence_planner.stack_layers(
+        request,
+        levels=args.layers,
+        corners=args.corners,
+        z_step=args.z_step,
+        collision_checker=collision_checker,
+        interleaf=interleaf,
+        interleaf_frequency=args.interleaf_frequency,
+    )
+
+    material_path: str | Path | None
+    if getattr(args, "no_materials", False):
+        material_path = None
+    else:
+        material_path = args.mtl or Path(args.output).with_suffix(".mtl")
+
+    try:
+        result = export_sequence_to_obj(
+            sequence,
+            request,
+            args.output,
+            include_pallet=not args.skip_pallet,
+            explode_gap=args.explode_gap,
+            palette=args.palette,
+            material_path=material_path,
+        )
+    except ValueError as exc:
+        repo.close()
+        raise SystemExit(str(exc)) from exc
+
+    repo.close()
+    print(
+        "Modello 3D generato: {path} (box={boxes}, facce totali={faces}, vertici={verts})".format(
+            path=result.path,
+            boxes=result.boxes,
+            faces=result.faces,
+            verts=result.vertices,
+        )
+    )
+    if result.material_path:
+        print(f"File materiali salvato in {result.material_path}")
+
+
 def run_archive(args: argparse.Namespace) -> None:
     repo = DataRepository(args.db)
     repo.initialize(args.seed)
@@ -958,6 +1253,8 @@ def main() -> None:
         run_analyze(args)
     elif args.command == "plc":
         run_plc(args)
+    elif args.command == "render":
+        run_render(args)
 
 
 if __name__ == "__main__":  # pragma: no cover
