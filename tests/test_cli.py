@@ -120,6 +120,180 @@ def test_run_catalog_stats_json(tmp_path, capsys):
     assert payload["stats"]["count"] >= 1
 
 
+def test_run_quote_table(tmp_path, capsys):
+    args = Namespace(
+        pallet="EUR-EPAL",
+        box="BX-250",
+        origin="SW",
+        axes="EN",
+        format="table",
+        pallet_width=None,
+        pallet_depth=None,
+        pallet_height=None,
+        overhang_x=None,
+        overhang_y=None,
+        box_width=None,
+        box_depth=None,
+        box_height=None,
+        box_weight=None,
+        label_position=None,
+        db=tmp_path / "quote.db",
+        seed="data/seed_data.json",
+    )
+    cli.run_quote(args)
+    out = capsys.readouterr().out
+    assert "Pallet EUR-EPAL" in out
+    assert "Angolo quote" in out
+
+
+def test_run_quote_json(tmp_path, capsys):
+    args = Namespace(
+        pallet="EUR-EPAL",
+        box="BX-250",
+        origin="CENTER",
+        axes="WS",
+        format="json",
+        pallet_width=None,
+        pallet_depth=None,
+        pallet_height=None,
+        overhang_x=None,
+        overhang_y=None,
+        box_width=None,
+        box_depth=None,
+        box_height=None,
+        box_weight=None,
+        label_position=None,
+        db=tmp_path / "quote_json.db",
+        seed="data/seed_data.json",
+    )
+    cli.run_quote(args)
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["pallet"]["angle_deg"] == 0.0
+    assert payload["origin"] == "CENTER"
+
+
+def test_run_grip_table(tmp_path, capsys):
+    args = Namespace(
+        pallet="EUR-EPAL",
+        box="BX-250",
+        tool="TK-2",
+        origin="SW",
+        axes="EN",
+        rows=1,
+        cols=2,
+        spacing_x=60.0,
+        spacing_y=0.0,
+        finger_width=90.0,
+        finger_depth=200.0,
+        finger_height=160.0,
+        boxes_per_finger=1,
+        tool_width=140.0,
+        tool_depth=150.0,
+        format="table",
+        pallet_width=None,
+        pallet_depth=None,
+        pallet_height=None,
+        overhang_x=None,
+        overhang_y=None,
+        box_width=None,
+        box_depth=None,
+        box_height=None,
+        box_weight=None,
+        label_position=None,
+        db=tmp_path / "grip.db",
+        seed="data/seed_data.json",
+    )
+    cli.run_grip(args)
+    out = capsys.readouterr().out
+    assert "Presa multipla" in out
+    assert "Ingombro pinza" in out
+    assert "Collisione dita" in out
+    assert "limite tool lungo X" in out
+
+
+def test_run_grip_json(tmp_path, capsys):
+    args = Namespace(
+        pallet="EUR-EPAL",
+        box="BX-250",
+        tool="TK-2",
+        origin="SW",
+        axes="EN",
+        rows=2,
+        cols=2,
+        spacing_x=100.0,
+        spacing_y=100.0,
+        finger_width=80.0,
+        finger_depth=180.0,
+        finger_height=150.0,
+        boxes_per_finger=2,
+        tool_width=100.0,
+        tool_depth=100.0,
+        format="json",
+        pallet_width=None,
+        pallet_depth=None,
+        pallet_height=None,
+        overhang_x=None,
+        overhang_y=None,
+        box_width=None,
+        box_depth=None,
+        box_height=None,
+        box_weight=None,
+        label_position=None,
+        db=tmp_path / "grip_json.db",
+        seed="data/seed_data.json",
+    )
+    cli.run_grip(args)
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["total_boxes"] == 8
+    assert payload["fingers"]
+    assert any("tool lungo X" in warning for warning in payload["warnings"])
+
+
+def test_run_viewer_snap(tmp_path, capsys):
+    args = Namespace(
+        pallet="EUR-EPAL",
+        box="BX-250",
+        tool="TK-2",
+        corner="SW",
+        layers=2,
+        corners=["SW", "NE"],
+        z_step=None,
+        explode_gap=40.0,
+        interleaf=None,
+        interleaf_frequency=1,
+        rotate=[(15.0, 30.0)],
+        translate=[(25.0, 0.0, 10.0)],
+        zoom=[-120.0],
+        snap=True,
+        origin="SW",
+        axes="EN",
+        approach_distance=70.0,
+        approach_direction="NE",
+        approach_override=None,
+        label_offset=5.0,
+        pallet_width=None,
+        pallet_depth=None,
+        pallet_height=None,
+        overhang_x=None,
+        overhang_y=None,
+        box_width=None,
+        box_depth=None,
+        box_height=None,
+        box_weight=None,
+        label_position=None,
+        db=tmp_path / "viewer.db",
+        seed="data/seed_data.json",
+    )
+    cli.run_viewer(args)
+    out = capsys.readouterr().out
+    assert "Visualizzazione 3D del bancale" in out
+    assert "Camera:" in out
+    assert "Snap point calcolati" in out
+    assert "Esploso attivo" in out
+    assert "Sequenza piani" in out
+    assert "Layer 1" in out
+
+
 def test_box_override_helper(tmp_path):
     repo = DataRepository(tmp_path / "override.db")
     repo.initialize("data/seed_data.json")

@@ -21,14 +21,30 @@ from .models import (
     LayerRequest,
     Pallet,
     ReferenceFrame,
+    Vector3,
 )
 from .plc import SiemensPLCExporter
 from .planner import RecursiveFiveBlockPlanner
 from .project import ProjectArchiver
+from .quote import build_quote_report
 from .render3d import export_sequence_to_obj, list_color_palettes
 from .repository import DataRepository
 from .sequence import LayerSequencePlanner
 from .snap import SnapPointGenerator
+from .gripper import (
+    MultiGripDefinition,
+    build_layout,
+    detect_finger_collisions,
+    evaluate_envelope,
+    evaluate_tool_clearance,
+)
+from .viewer import (
+    VirtualCamera,
+    apply_camera_script,
+    build_scene,
+    describe_sequence_layers,
+    summarize_metrics,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -176,6 +192,144 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Mostra anche un riepilogo numerico dei dati",
     )
+
+    quote_parser = sub.add_parser(
+        "quote",
+        help="Calcola le quote (in mm) di pallet e scatola con angolo fisso",
+    )
+    quote_parser.add_argument("--pallet", required=True, help="Pallet id")
+    quote_parser.add_argument("--box", required=True, help="Box id")
+    _add_reference_args(quote_parser)
+    _add_pallet_override_args(quote_parser)
+    _add_box_override_args(quote_parser)
+    quote_parser.add_argument(
+        "--format",
+        choices=["table", "json"],
+        default="table",
+        help="Formato di output",
+    )
+    quote_parser.add_argument("--db", default="verpal.db", help="Percorso database")
+    quote_parser.add_argument("--seed", default="data/seed_data.json", help="Seed data path")
+
+    grip_parser = sub.add_parser(
+        "grip",
+        help="Definisci una presa multipla completa di pinza",
+    )
+    grip_parser.add_argument("--pallet", required=True, help="Pallet id")
+    grip_parser.add_argument("--box", required=True, help="Box id")
+    grip_parser.add_argument("--tool", required=True, help="Tool id")
+    _add_reference_args(grip_parser)
+    _add_pallet_override_args(grip_parser)
+    _add_box_override_args(grip_parser)
+    grip_parser.add_argument("--rows", type=int, default=1, help="Numero file di dita")
+    grip_parser.add_argument("--cols", type=int, default=1, help="Numero colonne di dita")
+    grip_parser.add_argument(
+        "--spacing-x",
+        type=float,
+        default=0.0,
+        help="Passo centro-centro lungo X (mm)",
+    )
+    grip_parser.add_argument(
+        "--spacing-y",
+        type=float,
+        default=0.0,
+        help="Passo centro-centro lungo Y (mm)",
+    )
+    grip_parser.add_argument("--finger-width", type=float, required=True, help="Larghezza dita (mm)")
+    grip_parser.add_argument("--finger-depth", type=float, required=True, help="Profondità dita (mm)")
+    grip_parser.add_argument("--finger-height", type=float, required=True, help="Altezza dita (mm)")
+    grip_parser.add_argument(
+        "--boxes-per-finger",
+        type=int,
+        default=1,
+        help="Numero scatole movimentate da ogni dito",
+    )
+    grip_parser.add_argument(
+        "--tool-width",
+        type=float,
+        help="Finestra utile del tool lungo X (mm)",
+    )
+    grip_parser.add_argument(
+        "--tool-depth",
+        type=float,
+        help="Finestra utile del tool lungo Y (mm)",
+    )
+    grip_parser.add_argument(
+        "--format",
+        choices=["table", "json"],
+        default="table",
+        help="Formato di output",
+    )
+    grip_parser.add_argument("--db", default="verpal.db", help="Percorso database")
+    grip_parser.add_argument("--seed", default="data/seed_data.json", help="Seed data path")
+
+    viewer_parser = sub.add_parser(
+        "viewer",
+        help="Visualizzatore 3D testuale con camera virtuale",
+    )
+    viewer_parser.add_argument("--pallet", required=True, help="Pallet id")
+    viewer_parser.add_argument("--box", required=True, help="Box id")
+    viewer_parser.add_argument("--tool", required=True, help="Tool id")
+    viewer_parser.add_argument("--corner", default="SW", help="Corner iniziale")
+    viewer_parser.add_argument("--layers", type=int, default=1, help="Numero di strati")
+    viewer_parser.add_argument("--corners", nargs="*", help="Corner per ogni livello")
+    viewer_parser.add_argument("--z-step", type=float, help="Incremento Z personalizzato")
+    viewer_parser.add_argument(
+        "--explode-gap",
+        type=float,
+        default=0.0,
+        help="Esploso verticale (mm) tra gli strati",
+    )
+    _add_interleaf_args(viewer_parser)
+    viewer_parser.add_argument(
+        "--rotate",
+        nargs=2,
+        type=float,
+        action="append",
+        metavar=("POLAR", "AZIMUTH"),
+        help="Rotazioni aggiuntive (gradi polari/azimutali)",
+    )
+    viewer_parser.add_argument(
+        "--translate",
+        nargs=3,
+        type=float,
+        action="append",
+        metavar=("DX", "DY", "DZ"),
+        help="Traslazioni della camera (mm)",
+    )
+    viewer_parser.add_argument(
+        "--zoom",
+        type=float,
+        action="append",
+        help="Variazione raggio camera (mm)",
+    )
+    viewer_parser.add_argument("--snap", action="store_true", help="Mostra il conteggio degli snap point")
+    viewer_parser.add_argument(
+        "--approach-distance",
+        type=float,
+        default=75.0,
+        help="Ampiezza vettore di accostamento di default",
+    )
+    viewer_parser.add_argument(
+        "--approach-direction",
+        help="Direzione di accostamento predefinita",
+    )
+    viewer_parser.add_argument(
+        "--approach-override",
+        action="append",
+        help="Override blocchi nel formato blocco=DIREZIONE:DISTANZA",
+    )
+    viewer_parser.add_argument(
+        "--label-offset",
+        type=float,
+        default=5.0,
+        help="Offset etichetta per la vista 3D",
+    )
+    _add_reference_args(viewer_parser)
+    _add_pallet_override_args(viewer_parser)
+    _add_box_override_args(viewer_parser)
+    viewer_parser.add_argument("--db", default="verpal.db", help="Percorso database")
+    viewer_parser.add_argument("--seed", default="data/seed_data.json", help="Seed data path")
 
     render_parser = sub.add_parser(
         "render",
@@ -414,6 +568,14 @@ def _positive_value(value: float | None, fallback: float, name: str) -> float:
     return value
 
 
+def _positive_optional(value: float | None, name: str) -> float | None:
+    if value is None:
+        return None
+    if value <= 0:
+        raise ValueError(f"{name} deve essere maggiore di zero")
+    return value
+
+
 def _non_negative_value(value: float | None, fallback: float, name: str) -> float:
     if value is None:
         return fallback
@@ -587,6 +749,327 @@ def run_catalog(args: argparse.Namespace) -> None:
                     label = key.replace("_", " ").capitalize()
                 print(f"  - {label}: {_format_stat_value(value)}")
     repo.close()
+
+
+def run_quote(args: argparse.Namespace) -> None:
+    repo = DataRepository(args.db)
+    repo.initialize(args.seed)
+    try:
+        pallet = _resolve_pallet(repo, args)
+        box = _resolve_box(repo, args)
+        frame = _reference_frame_from_args(args.origin, args.axes)
+    except ValueError as exc:
+        repo.close()
+        raise SystemExit(str(exc)) from exc
+    report = build_quote_report(pallet, box, frame)
+    if args.format == "json":
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        headers = ("Elemento", "Larghezza (mm)", "Profondità (mm)", "Altezza (mm)")
+        rows = [report.pallet.as_row(), report.box.as_row()]
+        _print_table(headers, rows)
+        print("Angolo quote: 0.0° (fisso e non modificabile)")
+        print(f"Sistema di riferimento: origine {report.origin} - assi {report.axes}")
+    repo.close()
+
+
+def run_grip(args: argparse.Namespace) -> None:
+    repo = DataRepository(args.db)
+    repo.initialize(args.seed)
+    try:
+        pallet = _resolve_pallet(repo, args)
+        box = _resolve_box(repo, args)
+        frame = _reference_frame_from_args(args.origin, args.axes)
+    except ValueError as exc:
+        repo.close()
+        raise SystemExit(str(exc)) from exc
+    tool = repo.get_tool(args.tool)
+    try:
+        tool_width = _positive_optional(getattr(args, "tool_width", None), "tool_width")
+        tool_depth = _positive_optional(getattr(args, "tool_depth", None), "tool_depth")
+    except ValueError as exc:
+        repo.close()
+        raise SystemExit(str(exc)) from exc
+
+    definition = MultiGripDefinition(
+        rows=args.rows,
+        cols=args.cols,
+        spacing_x=args.spacing_x,
+        spacing_y=args.spacing_y,
+        finger_width=args.finger_width,
+        finger_depth=args.finger_depth,
+        finger_height=args.finger_height,
+        boxes_per_finger=args.boxes_per_finger,
+    )
+    try:
+        layout = build_layout(definition)
+    except ValueError as exc:
+        repo.close()
+        raise SystemExit(str(exc)) from exc
+
+    warnings = evaluate_envelope(layout, pallet, pallet.max_overhang_x, pallet.max_overhang_y)
+    warnings.extend(detect_finger_collisions(layout))
+    warnings.extend(evaluate_tool_clearance(layout, tool_width, tool_depth))
+    total_boxes = definition.total_boxes()
+    if total_boxes > tool.max_boxes:
+        warnings.append(
+            "La presa richiede {} scatole ma il tool supporta al massimo {}".format(
+                total_boxes, tool.max_boxes
+            )
+        )
+
+    width, depth = layout.envelope()
+    if args.format == "json":
+        payload = layout.to_dict()
+        payload["tool_id"] = tool.id
+        payload["pallet_id"] = pallet.id
+        payload["box_id"] = box.id
+        payload["reference_frame"] = {"origin": frame.origin, "axes": frame.axes_token}
+        if tool_width is not None or tool_depth is not None:
+            payload["tool_window_mm"] = {
+                "width": tool_width,
+                "depth": tool_depth,
+            }
+        payload["warnings"] = warnings
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"Presa multipla per tool {tool.id} su pallet {pallet.id}")
+        print(f"File x colonne dita: {definition.rows} x {definition.cols}")
+        print(f"Totale scatole in presa: {total_boxes}")
+        print(
+            "Ingombro pinza: {:.1f} x {:.1f} x {:.1f} mm".format(
+                width, depth, definition.finger_height
+            )
+        )
+        if tool_width is not None or tool_depth is not None:
+            width_text = "n/d" if tool_width is None else f"{tool_width:.1f}"
+            depth_text = "n/d" if tool_depth is None else f"{tool_depth:.1f}"
+            print(f"Finestra utile tool: {width_text} x {depth_text} mm")
+        if warnings:
+            print("Avvisi:")
+            for warning in warnings:
+                print(f"  - {warning}")
+        headers = ("Dita", "Riga", "Colonna", "X (mm)", "Y (mm)", "Z (mm)")
+        rows = [
+            (
+                f"F{finger.index}",
+                str(finger.row),
+                str(finger.col),
+                f"{finger.center.x:.1f}",
+                f"{finger.center.y:.1f}",
+                f"{finger.center.z:.1f}",
+            )
+            for finger in layout.fingers
+        ]
+        _print_table(headers, rows)
+        print(f"Sistema di riferimento: origine {frame.origin} - assi {frame.axes_token}")
+    repo.close()
+
+
+def run_viewer(args: argparse.Namespace) -> None:
+    if args.explode_gap < 0:
+        raise SystemExit("--explode-gap deve essere maggiore o uguale a zero")
+    repo = DataRepository(args.db)
+    repo.initialize(args.seed)
+    try:
+        pallet = _resolve_pallet(repo, args)
+        box = _resolve_box(repo, args)
+    except ValueError as exc:
+        repo.close()
+        raise SystemExit(str(exc)) from exc
+    tool = repo.get_tool(args.tool)
+    try:
+        interleaf = _resolve_interleaf(repo, args)
+    except KeyError as exc:
+        repo.close()
+        raise SystemExit(str(exc)) from exc
+    try:
+        frame = _reference_frame_from_args(args.origin, args.axes)
+    except ValueError as exc:
+        repo.close()
+        raise SystemExit(str(exc)) from exc
+
+    request = LayerRequest(
+        pallet=pallet,
+        box=box,
+        tool=tool,
+        start_corner=args.corner,
+        reference_frame=frame,
+    )
+
+    try:
+        overrides = parse_approach_overrides(args.approach_override)
+    except ValueError as exc:
+        repo.close()
+        raise SystemExit(str(exc)) from exc
+
+    annotator = PlacementAnnotator(
+        default_approach=args.approach_distance,
+        label_offset=args.label_offset,
+    )
+
+    if args.layers > 1:
+        planner = LayerSequencePlanner()
+        collision_checker = CollisionChecker()
+        plan = planner.stack_layers(
+            request,
+            levels=args.layers,
+            corners=args.corners,
+            z_step=args.z_step,
+            collision_checker=collision_checker,
+            approach_overrides=overrides,
+            interleaf=interleaf,
+            interleaf_frequency=args.interleaf_frequency,
+        )
+        for layer in plan.layers:
+            direction = (args.approach_direction or layer.start_corner).upper()
+            apply_approach(layer, direction, args.approach_distance, overrides)
+        active_plan: LayerPlan | LayerSequencePlan = plan
+    else:
+        plan = _calculate_layer(request)
+        direction = (args.approach_direction or args.corner).upper()
+        apply_approach(plan, direction, args.approach_distance, overrides)
+        active_plan = plan
+
+    metrics = summarize_metrics(active_plan)
+    scene = build_scene(
+        active_plan,
+        width=pallet.dimensions.width,
+        depth=pallet.dimensions.depth,
+        explode_gap=args.explode_gap,
+    )
+
+    camera = VirtualCamera(
+        radius=max(scene.width, scene.depth) * 1.5,
+        polar_deg=45.0,
+        azimuth_deg=45.0,
+        target=Vector3(
+            pallet.dimensions.width / 2,
+            pallet.dimensions.depth / 2,
+            scene.exploded_height() / 2,
+        ),
+    )
+    log = apply_camera_script(camera, args.rotate, args.translate, args.zoom)
+    camera_pos = camera.position()
+
+    print(
+        "Visualizzazione 3D del bancale {} con {} strati".format(
+            pallet.id, metrics.get("layers", 1)
+        )
+    )
+    print(
+        "Ingombro scena: {:.1f} x {:.1f} mm, altezza {:.1f} mm".format(
+            scene.width, scene.depth, scene.exploded_height()
+        )
+    )
+    if args.explode_gap > 0:
+        print(f"Esploso attivo: gap verticale {args.explode_gap:.1f} mm tra gli strati")
+    print(
+        "Camera: polar={:.1f}° azimuth={:.1f}° r={:.1f}mm posizione=({:.1f},{:.1f},{:.1f})".format(
+            camera.polar_deg,
+            camera.azimuth_deg,
+            camera.radius,
+            camera_pos.x,
+            camera_pos.y,
+            camera_pos.z,
+        )
+    )
+    if log:
+        print("Comandi eseguiti:")
+        for entry in log:
+            print(f"  - {entry}")
+    else:
+        print("Nessun comando extra: vista standard polare/azimutale")
+
+    if isinstance(active_plan, LayerSequencePlan):
+        print("Sequenza piani:")
+        for line in describe_sequence_layers(active_plan):
+            print(f"  - {line}")
+        if active_plan.interleaves:
+            levels = ", ".join(str(item.level) for item in active_plan.interleaves)
+            print(f"Falde inserite ai livelli: {levels}")
+        collisions = [
+            f"Layer {idx}: {collision}"
+            for idx, layer in enumerate(active_plan.layers, start=1)
+            for collision in layer.collisions
+        ]
+    else:
+        collisions = list(active_plan.collisions)
+        block_desc = ", ".join(active_plan.describe_blocks()) or "schema non disponibile"
+        print(
+            "Schema attivo: corner {} orient {}° schema {}".format(
+                active_plan.start_corner.upper(),
+                active_plan.orientation,
+                block_desc,
+            )
+        )
+    if collisions:
+        print("Collisioni rilevate:")
+        for collision in collisions:
+            print(f"  - {collision}")
+    else:
+        print("Nessuna collisione rilevata")
+
+    if args.interleaf:
+        print(
+            "Deposito falda '{id}' ogni {freq} strato/i".format(
+                id=args.interleaf,
+                freq=max(1, args.interleaf_frequency),
+            )
+        )
+
+    base_layer: LayerPlan | None
+    if isinstance(active_plan, LayerSequencePlan):
+        base_layer = active_plan.layers[0] if active_plan.layers else None
+    else:
+        base_layer = active_plan
+    if base_layer:
+        annotations = annotator.annotate(base_layer)
+        if annotations:
+            preview = annotations[0]
+            label = preview.label_position
+            vector = preview.approach_vector
+            print(
+                "Presa campione: label=({:.1f},{:.1f},{:.1f}) approccio {} {:.1f}mm vettore=({:.1f},{:.1f},{:.1f})".format(
+                    label.x,
+                    label.y,
+                    label.z,
+                    preview.approach_direction,
+                    preview.approach_distance,
+                    vector.x,
+                    vector.y,
+                    vector.z,
+                )
+            )
+
+    if args.snap:
+        generator = SnapPointGenerator()
+        total_points = 0
+        plans: list[LayerPlan]
+        if isinstance(active_plan, LayerSequencePlan):
+            plans = active_plan.layers
+        else:
+            plans = [active_plan]
+        for layer in plans:
+            dims = layer.box.dimensions if layer.box else box.dimensions
+            width, depth = _footprint_for_layer(layer, dims.width, dims.depth)
+            snaps = generator.generate(layer, width, depth)
+            total_points += sum(len(points) for points in snaps.values())
+        print(f"Snap point calcolati: {total_points}")
+
+    print(
+        "Sistema di riferimento: origine {} assi {}".format(
+            frame.origin, frame.axes_token
+        )
+    )
+    repo.close()
+
+
+def _footprint_for_layer(layer: LayerPlan, width: float, depth: float) -> tuple[float, float]:
+    if layer.orientation % 180 == 0:
+        return width, depth
+    return depth, width
+
 
 
 def _catalog_summary(entity: str, records: list[dict]) -> dict[str, float | int]:
@@ -1247,6 +1730,10 @@ def main() -> None:
         run_archive(args)
     elif args.command == "catalog":
         run_catalog(args)
+    elif args.command == "quote":
+        run_quote(args)
+    elif args.command == "grip":
+        run_grip(args)
     elif args.command == "gui":
         run_gui(args)
     elif args.command == "analyze":
@@ -1255,6 +1742,8 @@ def main() -> None:
         run_plc(args)
     elif args.command == "render":
         run_render(args)
+    elif args.command == "viewer":
+        run_viewer(args)
 
 
 if __name__ == "__main__":  # pragma: no cover
