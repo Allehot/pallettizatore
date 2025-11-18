@@ -1,5 +1,14 @@
 from verpal.metrics import compute_layer_metrics, compute_sequence_metrics
-from verpal.models import Box, Dimensions, LayerPlan, LayerPlacement, LayerSequencePlan, Vector3
+from verpal.models import (
+    Box,
+    Dimensions,
+    Interleaf,
+    InterleafPlacement,
+    LayerPlan,
+    LayerPlacement,
+    LayerSequencePlan,
+    Vector3,
+)
 
 
 def _build_layer(z_offset: float = 0.0) -> LayerPlan:
@@ -51,11 +60,15 @@ def test_compute_layer_metrics():
 
 def test_compute_sequence_metrics():
     layer_a = _build_layer(0.0)
-    layer_b = _build_layer(50.0)
-    sequence = LayerSequencePlan(layers=[layer_a, layer_b])
+    layer_b = _build_layer(53.0)
+    interleaf = Interleaf(id="IL", thickness=3.0, weight=0.5, material="carton")
+    sequence = LayerSequencePlan(
+        layers=[layer_a, layer_b],
+        interleaves=[InterleafPlacement(level=1, z_position=50.0, interleaf=interleaf)],
+    )
     metrics = compute_sequence_metrics(sequence)
     assert metrics.layers == 2
     assert metrics.total_boxes == 4
-    assert metrics.total_weight == 20.0
-    assert metrics.center_of_mass.z == 50.0
-    assert metrics.max_height == 100.0
+    assert metrics.total_weight == 20.5
+    assert metrics.center_of_mass.z == 51.5
+    assert metrics.max_height == 103.0

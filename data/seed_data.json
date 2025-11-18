@@ -10,5 +10,9 @@
   "tools": [
     {"id": "TK-2", "name": "Presa doppia", "max_boxes": 2, "orientations": "0,90", "offset_x": 0, "offset_y": 0, "offset_z": 50},
     {"id": "TK-4", "name": "Presa quadrupla", "max_boxes": 4, "orientations": "0", "offset_x": 5, "offset_y": 5, "offset_z": 60}
+  ],
+  "interleaves": [
+    {"id": "IL-CARTON", "thickness": 3.0, "weight": 0.45, "material": "Cartone"},
+    {"id": "IL-HDPE", "thickness": 5.0, "weight": 0.85, "material": "HDPE"}
   ]
 }

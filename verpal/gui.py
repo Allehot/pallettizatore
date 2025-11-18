@@ -4,7 +4,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Iterable, Sequence
 
-from .models import LayerPlan, LayerPlacement, LayerRequest, LayerSequencePlan, Vector3
+from .collisions import CollisionChecker
+from .models import (
+    Box,
+    Interleaf,
+    LayerPlan,
+    LayerPlacement,
+    LayerRequest,
+    LayerSequencePlan,
+    Pallet,
+    ReferenceFrame,
+    Tool,
+    Vector3,
+)
+from .planner import RecursiveFiveBlockPlanner
+from .sequence import LayerSequencePlanner
 
 
 @dataclass(frozen=True)
@@ -296,18 +310,37 @@ def _build_canvas_class(tk_module):  # pragma: no cover - GUI wiring
 
 
 class PalletGuiApp:
-    """Tkinter GUI that visualizes the layer and 3D model."""
+    """Tkinter GUI that visualizes the layer, 3D model and repository data."""
+
+    _NO_INTERLEAF_VALUE = "(nessuna interfalda)"
 
     def __init__(
         self,
-        plan: LayerPlan,
-        request: LayerRequest,
         *,
-        sequence: LayerSequencePlan | None = None,
+        pallets: Sequence[Pallet],
+        boxes: Sequence[Box],
+        tools: Sequence[Tool],
+        interleaves: Sequence[Interleaf],
+        reference_frame: ReferenceFrame,
+        default_pallet_id: str,
+        default_box_id: str,
+        default_tool_id: str,
+        default_corner: str = "SW",
+        default_layers: int = 1,
+        default_corners: Sequence[str] | None = None,
+        default_z_step: float | None = None,
+        default_interleaf_id: str | None = None,
+        default_interleaf_frequency: int = 1,
     ) -> None:
-        self.plan = plan
-        self.request = request
-        self.sequence = sequence
+        self.pallets = list(pallets)
+        self.boxes = list(boxes)
+        self.tools = list(tools)
+        self.interleaves = list(interleaves)
+        self.reference_frame = reference_frame
+        self._layer_planner = RecursiveFiveBlockPlanner()
+        self._sequence_planner = LayerSequencePlanner(self._layer_planner)
+        self._collision_checker = CollisionChecker()
+
         tk_module, messagebox, ttk = _import_tk()
         Figure, FigureCanvasTkAgg, Poly3DCollection = _import_matplotlib()
         self._messagebox = messagebox
@@ -318,8 +351,29 @@ class PalletGuiApp:
 
         self.root = tk_module.Tk()
         self.root.title("VerPal - Configuratore Grafico")
-        self.root.geometry("1200x640")
-        self.root.minsize(960, 520)
+        self.root.geometry("1280x720")
+        self.root.minsize(1024, 560)
+
+        self.pallet_var = tk_module.StringVar(value=default_pallet_id)
+        self.box_var = tk_module.StringVar(value=default_box_id)
+        self.tool_var = tk_module.StringVar(value=default_tool_id)
+        self.corner_var = tk_module.StringVar(value=default_corner.upper())
+        self.layers_var = tk_module.IntVar(value=max(1, default_layers))
+        self.corners_var = tk_module.StringVar(value=" ".join(default_corners or []))
+        self.z_step_var = tk_module.StringVar(
+            value="" if default_z_step is None else f"{default_z_step:.3f}"
+        )
+        self.interleaf_var = tk_module.StringVar(
+            value=default_interleaf_id or self._NO_INTERLEAF_VALUE
+        )
+        self.interleaf_frequency_var = tk_module.IntVar(
+            value=max(1, default_interleaf_frequency)
+        )
+
+        try:
+            self.request, self.plan, self.sequence = self._build_plan()
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
 
         main = ttk.Frame(self.root)
         main.pack(fill=tk_module.BOTH, expand=True)
@@ -339,28 +393,139 @@ class PalletGuiApp:
             on_change=self._on_canvas_change,
             on_status=self._update_status,
             width=720,
-            height=600,
+            height=640,
         )
         self.canvas.grid(row=0, column=0, sticky="nsew")
 
         controls = ttk.Frame(left)
         controls.grid(row=1, column=0, sticky="ew", pady=4)
         controls.columnconfigure(0, weight=1)
-        ttk.Button(controls, text="Calcola quote", command=self._show_heights).grid(row=0, column=0, padx=4)
-        ttk.Button(controls, text="Reset vista", command=self._reset_view).grid(row=0, column=1, padx=4)
+        ttk.Button(controls, text="Calcola quote", command=self._show_heights).grid(
+            row=0, column=0, padx=4
+        )
+        ttk.Button(controls, text="Reset vista", command=self._reset_view).grid(
+            row=0, column=1, padx=4
+        )
 
         right = ttk.Frame(main)
         right.grid(row=0, column=1, sticky="nsew")
-        right.rowconfigure(0, weight=1)
+        right.rowconfigure(0, weight=0)
+        right.rowconfigure(1, weight=1)
         right.columnconfigure(0, weight=1)
+
+        config = ttk.LabelFrame(right, text="Dati disponibili nel DB")
+        config.grid(row=0, column=0, sticky="ew", padx=4, pady=4)
+        for i in range(2):
+            config.columnconfigure(i, weight=1)
+
+        ttk.Label(config, text="Pallet").grid(row=0, column=0, sticky="w", padx=2, pady=2)
+        pallet_combo = ttk.Combobox(
+            config,
+            textvariable=self.pallet_var,
+            values=[pallet.id for pallet in self.pallets],
+            state="readonly",
+        )
+        pallet_combo.grid(row=0, column=1, sticky="ew", padx=2, pady=2)
+        pallet_combo.bind("<<ComboboxSelected>>", self._on_inputs_changed)
+
+        ttk.Label(config, text="Scatola").grid(row=1, column=0, sticky="w", padx=2, pady=2)
+        box_combo = ttk.Combobox(
+            config,
+            textvariable=self.box_var,
+            values=[box.id for box in self.boxes],
+            state="readonly",
+        )
+        box_combo.grid(row=1, column=1, sticky="ew", padx=2, pady=2)
+        box_combo.bind("<<ComboboxSelected>>", self._on_inputs_changed)
+
+        ttk.Label(config, text="Tool").grid(row=2, column=0, sticky="w", padx=2, pady=2)
+        tool_combo = ttk.Combobox(
+            config,
+            textvariable=self.tool_var,
+            values=[tool.id for tool in self.tools],
+            state="readonly",
+        )
+        tool_combo.grid(row=2, column=1, sticky="ew", padx=2, pady=2)
+        tool_combo.bind("<<ComboboxSelected>>", self._on_inputs_changed)
+
+        ttk.Label(config, text="Corner iniziale").grid(
+            row=3, column=0, sticky="w", padx=2, pady=2
+        )
+        corner_combo = ttk.Combobox(
+            config,
+            textvariable=self.corner_var,
+            values=["SW", "SE", "NW", "NE"],
+            state="readonly",
+        )
+        corner_combo.grid(row=3, column=1, sticky="ew", padx=2, pady=2)
+        corner_combo.bind("<<ComboboxSelected>>", self._on_inputs_changed)
+
+        ttk.Label(config, text="Numero strati").grid(
+            row=4, column=0, sticky="w", padx=2, pady=2
+        )
+        layers_spin = tk_module.Spinbox(
+            config,
+            from_=1,
+            to=50,
+            textvariable=self.layers_var,
+            width=6,
+            command=self._on_inputs_changed,
+        )
+        layers_spin.grid(row=4, column=1, sticky="w", padx=2, pady=2)
+        layers_spin.bind("<Return>", self._on_inputs_changed)
+
+        ttk.Label(config, text="Sequenza corner").grid(
+            row=5, column=0, sticky="w", padx=2, pady=2
+        )
+        corners_entry = ttk.Entry(config, textvariable=self.corners_var)
+        corners_entry.grid(row=5, column=1, sticky="ew", padx=2, pady=2)
+        corners_entry.bind("<Return>", self._on_inputs_changed)
+        corners_entry.bind("<FocusOut>", self._on_inputs_changed)
+
+        ttk.Label(config, text="Step Z (mm)").grid(row=6, column=0, sticky="w", padx=2, pady=2)
+        z_entry = ttk.Entry(config, textvariable=self.z_step_var)
+        z_entry.grid(row=6, column=1, sticky="ew", padx=2, pady=2)
+        z_entry.bind("<Return>", self._on_inputs_changed)
+        z_entry.bind("<FocusOut>", self._on_inputs_changed)
+
+        ttk.Label(config, text="Interfalda").grid(row=7, column=0, sticky="w", padx=2, pady=2)
+        interleaf_values = [self._NO_INTERLEAF_VALUE] + [
+            interleaf.id for interleaf in self.interleaves
+        ]
+        interleaf_combo = ttk.Combobox(
+            config,
+            textvariable=self.interleaf_var,
+            values=interleaf_values,
+            state="readonly",
+        )
+        interleaf_combo.grid(row=7, column=1, sticky="ew", padx=2, pady=2)
+        interleaf_combo.bind("<<ComboboxSelected>>", self._on_inputs_changed)
+
+        ttk.Label(config, text="Freq. interfalda").grid(
+            row=8, column=0, sticky="w", padx=2, pady=2
+        )
+        interleaf_spin = tk_module.Spinbox(
+            config,
+            from_=1,
+            to=50,
+            textvariable=self.interleaf_frequency_var,
+            width=6,
+            command=self._on_inputs_changed,
+        )
+        interleaf_spin.grid(row=8, column=1, sticky="w", padx=2, pady=2)
+        interleaf_spin.bind("<Return>", self._on_inputs_changed)
+
+        ttk.Button(config, text="Ricalcola schema", command=self._on_inputs_changed).grid(
+            row=9, column=0, columnspan=2, sticky="ew", padx=2, pady=(8, 2)
+        )
 
         self.figure = self._Figure(figsize=(4, 4))
         self.ax = self.figure.add_subplot(111, projection="3d")
         self.canvas3d = self._FigureCanvasTkAgg(self.figure, master=right)
-        self.canvas3d.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+        self.canvas3d.get_tk_widget().grid(row=1, column=0, sticky="nsew")
 
         self.status_var = tk_module.StringVar()
-        self.status_var.set("Trascina le scatole per riposizionarle.")
+        self.status_var.set("Usa i menu per cambiare pallet, scatola e interfalda.")
         ttk.Label(main, textvariable=self.status_var, anchor="w").grid(
             row=1,
             column=0,
@@ -403,7 +568,13 @@ class PalletGuiApp:
         self.ax.set_zlabel("Z (mm)")
         self.ax.set_xlim(0, dims.width)
         self.ax.set_ylim(0, dims.depth)
-        max_height = max((row.top for row in compute_height_report(self.request, self.plan, self.sequence)), default=0.0)
+        max_height = max(
+            (
+                row.top
+                for row in compute_height_report(self.request, self.plan, self.sequence)
+            ),
+            default=0.0,
+        )
         self.ax.set_zlim(0, max_height + self.request.box.dimensions.height)
 
         layers: Sequence[LayerPlan]
@@ -416,6 +587,83 @@ class PalletGuiApp:
             for placement in layer.placements:
                 self._draw_box(placement)
         self.canvas3d.draw()
+
+    def _build_plan(self) -> tuple[LayerRequest, LayerPlan, LayerSequencePlan | None]:
+        request = self._build_request()
+        layers = max(1, int(self.layers_var.get() or 1))
+        corners = [token.upper() for token in self.corners_var.get().split() if token]
+        z_step = self._parse_float(self.z_step_var.get())
+        interleaf = self._selected_interleaf()
+        interleaf_frequency = max(1, int(self.interleaf_frequency_var.get() or 1))
+        if layers > 1:
+            sequence = self._sequence_planner.stack_layers(
+                request,
+                levels=layers,
+                corners=corners or None,
+                z_step=z_step,
+                collision_checker=self._collision_checker,
+                interleaf=interleaf,
+                interleaf_frequency=interleaf_frequency,
+            )
+            plan = sequence.layers[0]
+        else:
+            sequence = None
+            plan = self._layer_planner.plan_layer(request)
+        return request, plan, sequence
+
+    def _build_request(self) -> LayerRequest:
+        pallet = self._find_by_id(self.pallets, self.pallet_var.get(), "Pallet")
+        box = self._find_by_id(self.boxes, self.box_var.get(), "Scatola")
+        tool = self._find_by_id(self.tools, self.tool_var.get(), "Tool")
+        return LayerRequest(
+            pallet=pallet,
+            box=box,
+            tool=tool,
+            start_corner=(self.corner_var.get() or "SW").upper(),
+            reference_frame=self.reference_frame,
+        )
+
+    def _selected_interleaf(self) -> Interleaf | None:
+        value = self.interleaf_var.get()
+        if not value or value == self._NO_INTERLEAF_VALUE:
+            return None
+        return self._find_by_id(self.interleaves, value, "Interfalda")
+
+    def _on_inputs_changed(self, *_):  # pragma: no cover - UI callback
+        try:
+            request, plan, sequence = self._build_plan()
+        except ValueError as exc:
+            self._messagebox.showerror("Impossibile calcolare lo strato", str(exc))
+            return
+        self.request = request
+        self.plan = plan
+        self.sequence = sequence
+        self.canvas.request = request
+        self.canvas.plan = plan
+        self.canvas.refresh()
+        self._render_3d()
+        self.status_var.set(
+            "Schema aggiornato per pallet {p} e scatola {b}".format(
+                p=self.request.pallet.id,
+                b=self.request.box.id,
+            )
+        )
+
+    def _find_by_id(self, collection, item_id: str, label: str):
+        for item in collection:
+            if item.id == item_id:
+                return item
+        raise ValueError(f"{label} '{item_id}' non trovato")
+
+    def _parse_float(self, raw: str | float | None) -> float | None:
+        if raw is None:
+            return None
+        if isinstance(raw, float):
+            return raw
+        text = str(raw).strip()
+        if not text:
+            return None
+        return float(text)
 
     def _draw_box(self, placement: LayerPlacement) -> None:  # pragma: no cover - UI drawing
         physical = self.request.reference_frame.restore(

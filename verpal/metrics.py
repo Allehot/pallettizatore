@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Tuple
 
-from .models import Box, LayerPlan, LayerPlacement, LayerSequencePlan, Vector3
+from .models import Box, Dimensions, LayerPlan, LayerPlacement, LayerSequencePlan, Vector3
 
 
 @dataclass(frozen=True)
@@ -48,11 +48,32 @@ def compute_sequence_metrics(sequence: LayerSequencePlan) -> SequenceMetrics:
     """Compute aggregate metrics for a stacked sequence of layers."""
 
     entries: list[tuple[LayerPlacement, Box | None]] = []
+    box_count = 0
     for layer in sequence.layers:
+        box_count += len(layer.placements)
         entries.extend((placement, layer.box) for placement in layer.placements)
+    for entry in sequence.interleaves:
+        pseudo_box = Box(
+            id=f"interleaf-{entry.interleaf.id}",
+            dimensions=Dimensions(width=0.0, depth=0.0, height=entry.interleaf.thickness),
+            weight=entry.interleaf.weight,
+            label_position="top",
+        )
+        pseudo_placement = LayerPlacement(
+            box_id=pseudo_box.id,
+            position=Vector3(
+                x=0.0,
+                y=0.0,
+                z=entry.z_position + entry.interleaf.thickness / 2,
+            ),
+            rotation=0,
+            block="interleaf",
+            sequence_index=-entry.level,
+        )
+        entries.append((pseudo_placement, pseudo_box))
     total_boxes, total_weight, center, width, depth, height = _accumulate(entries)
     return SequenceMetrics(
-        total_boxes=total_boxes,
+        total_boxes=box_count,
         total_weight=total_weight,
         center_of_mass=center,
         footprint_width=width,

@@ -8,7 +8,18 @@ from .annotations import PlacementAnnotator
 from .collisions import CollisionChecker
 from .exporter import PlanExporter
 from .metrics import compute_layer_metrics, compute_sequence_metrics
-from .models import ApproachConfig, LayerPlan, LayerRequest, ReferenceFrame
+from .models import (
+    ApproachConfig,
+    Box,
+    Dimensions,
+    Interleaf,
+    LayerPlan,
+    LayerSequencePlan,
+    LayerRequest,
+    Pallet,
+    ReferenceFrame,
+)
+from .plc import SiemensPLCExporter
 from .planner import RecursiveFiveBlockPlanner
 from .project import ProjectArchiver
 from .repository import DataRepository
@@ -26,6 +37,8 @@ def build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--tool", required=True, help="Tool id")
     plan_parser.add_argument("--corner", default="SW", help="Start corner")
     _add_reference_args(plan_parser)
+    _add_pallet_override_args(plan_parser)
+    _add_box_override_args(plan_parser)
     plan_parser.add_argument("--db", default="verpal.db", help="Database path")
     plan_parser.add_argument("--seed", default="data/seed_data.json", help="Seed data path")
     plan_parser.add_argument("--export", help="Output filename")
@@ -57,9 +70,12 @@ def build_parser() -> argparse.ArgumentParser:
     stack_parser.add_argument("--tool", required=True, help="Tool id")
     stack_parser.add_argument("--corner", default="SW", help="Default start corner")
     _add_reference_args(stack_parser)
+    _add_pallet_override_args(stack_parser)
+    _add_box_override_args(stack_parser)
     stack_parser.add_argument("--corners", nargs="*", help="Sequence of corners per level")
     stack_parser.add_argument("--layers", type=int, default=2, help="Number of layers to stack")
     stack_parser.add_argument("--z-step", type=float, help="Custom Z increment between layers")
+    _add_interleaf_args(stack_parser)
     stack_parser.add_argument("--db", default="verpal.db", help="Database path")
     stack_parser.add_argument("--seed", default="data/seed_data.json", help="Seed data path")
     stack_parser.add_argument("--export", help="Output filename")
@@ -92,9 +108,12 @@ def build_parser() -> argparse.ArgumentParser:
     archive_parser.add_argument("--tool", required=True, help="Tool id")
     archive_parser.add_argument("--corner", default="SW", help="Corner iniziale")
     _add_reference_args(archive_parser)
+    _add_pallet_override_args(archive_parser)
+    _add_box_override_args(archive_parser)
     archive_parser.add_argument("--corners", nargs="*", help="Corner per ogni livello (multi layer)")
     archive_parser.add_argument("--layers", type=int, default=1, help="Numero di strati")
     archive_parser.add_argument("--z-step", type=float, help="Incremento Z personalizzato tra gli strati")
+    _add_interleaf_args(archive_parser)
     archive_parser.add_argument("--db", default="verpal.db", help="Database path")
     archive_parser.add_argument("--seed", default="data/seed_data.json", help="Seed data path")
     archive_parser.add_argument("--archive", required=True, help="File di output (.zip)")
@@ -129,7 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
     catalog_parser = sub.add_parser("catalog", help="Elenca i dati disponibili nel database")
     catalog_parser.add_argument(
         "entity",
-        choices=["pallets", "boxes", "tools"],
+        choices=["pallets", "boxes", "tools", "interleaves"],
         help="Tipo di dati da mostrare",
     )
     catalog_parser.add_argument("--db", default="verpal.db", help="Percorso database")
@@ -143,14 +162,26 @@ def build_parser() -> argparse.ArgumentParser:
         "gui",
         help="Avvia l'interfaccia grafica con drag&drop e vista 3D",
     )
-    gui_parser.add_argument("--pallet", required=True, help="Pallet id")
-    gui_parser.add_argument("--box", required=True, help="Box id")
-    gui_parser.add_argument("--tool", required=True, help="Tool id")
+    gui_parser.add_argument(
+        "--pallet",
+        help="Pallet id (opzionale: in assenza verrà usato il primo disponibile)",
+    )
+    gui_parser.add_argument(
+        "--box",
+        help="Box id (opzionale: in assenza verrà usato il primo disponibile)",
+    )
+    gui_parser.add_argument(
+        "--tool",
+        help="Tool id (opzionale: in assenza verrà usato il primo disponibile)",
+    )
     gui_parser.add_argument("--corner", default="SW", help="Corner di partenza")
     gui_parser.add_argument("--layers", type=int, default=1, help="Numero di strati da visualizzare")
     gui_parser.add_argument("--corners", nargs="*", help="Sequenza dei corner per ogni livello")
     gui_parser.add_argument("--z-step", type=float, help="Incremento Z personalizzato")
     _add_reference_args(gui_parser)
+    _add_pallet_override_args(gui_parser)
+    _add_box_override_args(gui_parser)
+    _add_interleaf_args(gui_parser)
     gui_parser.add_argument("--db", default="verpal.db", help="Percorso database")
     gui_parser.add_argument("--seed", default="data/seed_data.json", help="Seed data path")
 
@@ -166,8 +197,51 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_parser.add_argument("--corners", nargs="*", help="Corner per ogni livello")
     analyze_parser.add_argument("--z-step", type=float, help="Incremento Z personalizzato")
     _add_reference_args(analyze_parser)
+    _add_pallet_override_args(analyze_parser)
+    _add_box_override_args(analyze_parser)
+    _add_interleaf_args(analyze_parser)
     analyze_parser.add_argument("--db", default="verpal.db", help="Percorso database")
     analyze_parser.add_argument("--seed", default="data/seed_data.json", help="Seed data path")
+
+    plc_parser = sub.add_parser(
+        "plc",
+        help="Genera un file compatibile con PLC Siemens con le posizioni di deposito",
+    )
+    plc_parser.add_argument("--pallet", required=True, help="Pallet id")
+    plc_parser.add_argument("--box", required=True, help="Box id")
+    plc_parser.add_argument("--tool", required=True, help="Tool id")
+    plc_parser.add_argument("--corner", default="SW", help="Corner iniziale")
+    plc_parser.add_argument("--layers", type=int, default=1, help="Numero di strati")
+    plc_parser.add_argument("--corners", nargs="*", help="Corner per ogni livello")
+    plc_parser.add_argument("--z-step", type=float, help="Incremento Z personalizzato")
+    _add_reference_args(plc_parser)
+    _add_pallet_override_args(plc_parser)
+    _add_box_override_args(plc_parser)
+    _add_interleaf_args(plc_parser)
+    plc_parser.add_argument("--target", required=True, help="File di destinazione (es. packet.s7)")
+    plc_parser.add_argument("--db", default="verpal.db", help="Percorso database")
+    plc_parser.add_argument("--seed", default="data/seed_data.json", help="Seed data path")
+    plc_parser.add_argument(
+        "--approach-distance",
+        type=float,
+        default=75.0,
+        help="Ampiezza (mm) del vettore di accostamento",
+    )
+    plc_parser.add_argument(
+        "--approach-direction",
+        help="Direzione di accostamento (N, S, E, W, NE, NW, SE, SW)",
+    )
+    plc_parser.add_argument(
+        "--approach-override",
+        action="append",
+        help="Override blocchi nel formato blocco=DIREZIONE:DISTANZA",
+    )
+    plc_parser.add_argument(
+        "--label-offset",
+        type=float,
+        default=5.0,
+        help="Offset della posizione etichetta rispetto al lato della scatola",
+    )
     return parser
 
 
@@ -182,6 +256,85 @@ def _add_reference_args(parser: argparse.ArgumentParser) -> None:
         default="EN",
         help="Orientamento assi (X: E/W, Y: N/S es. EN, ES, WN, WS)",
     )
+
+
+def _add_pallet_override_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--pallet-width", type=float, help="Larghezza pallet personalizzata (mm)")
+    parser.add_argument("--pallet-depth", type=float, help="Profondità pallet personalizzata (mm)")
+    parser.add_argument("--pallet-height", type=float, help="Altezza pallet personalizzata (mm)")
+    parser.add_argument("--overhang-x", type=float, help="Sbordo massimo lungo X (mm)")
+    parser.add_argument("--overhang-y", type=float, help="Sbordo massimo lungo Y (mm)")
+
+
+def _add_box_override_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--box-width", type=float, help="Larghezza scatola personalizzata (mm)")
+    parser.add_argument("--box-depth", type=float, help="Profondità scatola personalizzata (mm)")
+    parser.add_argument("--box-height", type=float, help="Altezza scatola personalizzata (mm)")
+    parser.add_argument("--box-weight", type=float, help="Peso scatola personalizzato (kg)")
+    parser.add_argument("--label-position", help="Faccia etichetta personalizzata (front/side/etc)")
+
+
+def _add_interleaf_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--interleaf", help="ID dell'interfalda da inserire tra gli strati")
+    parser.add_argument(
+        "--interleaf-frequency",
+        type=int,
+        default=1,
+        help="Inserisci l'interfalda ogni N strati (default 1)",
+    )
+
+
+def _resolve_pallet(repo: DataRepository, args: argparse.Namespace) -> Pallet:
+    pallet = repo.get_pallet(args.pallet)
+    width = _positive_value(getattr(args, "pallet_width", None), pallet.dimensions.width, "pallet_width")
+    depth = _positive_value(getattr(args, "pallet_depth", None), pallet.dimensions.depth, "pallet_depth")
+    height = _positive_value(getattr(args, "pallet_height", None), pallet.dimensions.height, "pallet_height")
+    overhang_x = _non_negative_value(getattr(args, "overhang_x", None), pallet.max_overhang_x, "overhang_x")
+    overhang_y = _non_negative_value(getattr(args, "overhang_y", None), pallet.max_overhang_y, "overhang_y")
+    return Pallet(
+        id=pallet.id,
+        dimensions=Dimensions(width=width, depth=depth, height=height),
+        max_overhang_x=overhang_x,
+        max_overhang_y=overhang_y,
+    )
+
+
+def _resolve_box(repo: DataRepository, args: argparse.Namespace) -> Box:
+    box = repo.get_box(args.box)
+    width = _positive_value(getattr(args, "box_width", None), box.dimensions.width, "box_width")
+    depth = _positive_value(getattr(args, "box_depth", None), box.dimensions.depth, "box_depth")
+    height = _positive_value(getattr(args, "box_height", None), box.dimensions.height, "box_height")
+    weight = _positive_value(getattr(args, "box_weight", None), box.weight, "box_weight")
+    label = getattr(args, "label_position", None) or box.label_position
+    return Box(
+        id=box.id,
+        dimensions=Dimensions(width=width, depth=depth, height=height),
+        weight=weight,
+        label_position=label,
+    )
+
+
+def _resolve_interleaf(repo: DataRepository, args: argparse.Namespace) -> Interleaf | None:
+    interleaf_id = getattr(args, "interleaf", None)
+    if not interleaf_id:
+        return None
+    return repo.get_interleaf(interleaf_id)
+
+
+def _positive_value(value: float | None, fallback: float, name: str) -> float:
+    if value is None:
+        return fallback
+    if value <= 0:
+        raise ValueError(f"{name} deve essere maggiore di zero")
+    return value
+
+
+def _non_negative_value(value: float | None, fallback: float, name: str) -> float:
+    if value is None:
+        return fallback
+    if value < 0:
+        raise ValueError(f"{name} deve essere maggiore o uguale a zero")
+    return value
 
 
 def _parse_overrides(values: list[str] | None) -> Dict[str, ApproachConfig]:
@@ -273,7 +426,7 @@ def run_catalog(args: argparse.Namespace) -> None:
             for box in boxes
         ]
         headers = ("ID", "Dimensioni (mm)", "Peso", "Etichetta")
-    else:
+    elif args.entity == "tools":
         tools = repo.list_tools()
         rows = [
             (
@@ -286,6 +439,18 @@ def run_catalog(args: argparse.Namespace) -> None:
             for tool in tools
         ]
         headers = ("ID", "Nome", "# Scatole", "Orientazioni", "Offset (mm)")
+    else:
+        interleaves = repo.list_interleaves()
+        rows = [
+            (
+                interleaf.id,
+                f"{interleaf.thickness:.1f}mm",
+                f"{interleaf.weight:.2f}kg",
+                interleaf.material,
+            )
+            for interleaf in interleaves
+        ]
+        headers = ("ID", "Spessore", "Peso", "Materiale")
 
     if rows:
         _print_table(headers, rows)
@@ -294,11 +459,85 @@ def run_catalog(args: argparse.Namespace) -> None:
     repo.close()
 
 
+def run_plc(args: argparse.Namespace) -> None:
+    repo = DataRepository(args.db)
+    repo.initialize(args.seed)
+    try:
+        pallet = _resolve_pallet(repo, args)
+        box = _resolve_box(repo, args)
+    except ValueError as exc:
+        repo.close()
+        raise SystemExit(str(exc)) from exc
+    tool = repo.get_tool(args.tool)
+    try:
+        interleaf = _resolve_interleaf(repo, args)
+    except KeyError as exc:
+        repo.close()
+        raise SystemExit(str(exc)) from exc
+    try:
+        reference_frame = _reference_frame_from_args(args.origin, args.axes)
+    except ValueError as exc:  # pragma: no cover - defensive user input
+        repo.close()
+        raise SystemExit(str(exc)) from exc
+
+    request = LayerRequest(
+        pallet=pallet,
+        box=box,
+        tool=tool,
+        start_corner=args.corner,
+        reference_frame=reference_frame,
+    )
+
+    try:
+        overrides = _parse_overrides(args.approach_override)
+    except ValueError as exc:  # pragma: no cover - defensive user input
+        repo.close()
+        raise SystemExit(str(exc)) from exc
+
+    annotator = PlacementAnnotator(
+        default_approach=args.approach_distance,
+        label_offset=args.label_offset,
+    )
+
+    plan: LayerPlan | LayerSequencePlan
+    if args.layers > 1:
+        sequence_planner = LayerSequencePlanner()
+        collision_checker = CollisionChecker()
+        plan = sequence_planner.stack_layers(
+            request,
+            levels=args.layers,
+            corners=args.corners,
+            z_step=args.z_step,
+            collision_checker=collision_checker,
+            approach_overrides=overrides,
+            interleaf=interleaf,
+            interleaf_frequency=args.interleaf_frequency,
+        )
+        for layer in plan.layers:
+            layer_direction = (args.approach_direction or layer.start_corner).upper()
+            _apply_approach(layer, layer_direction, args.approach_distance, overrides)
+    else:
+        plan = _calculate_layer(request)
+        direction = (args.approach_direction or args.corner).upper()
+        _apply_approach(plan, direction, args.approach_distance, overrides)
+
+    exporter = SiemensPLCExporter(annotator=annotator)
+    path = exporter.to_file(plan, args.target)
+    print(f"File PLC salvato in {path}")
+    if isinstance(plan, LayerSequencePlan) and plan.interleaves:
+        print(f"Include {len(plan.interleaves)} interfalde nel profilo Z")
+    repo.close()
+
+
 def run_plan(args: argparse.Namespace) -> None:
     repo = DataRepository(args.db)
     repo.initialize(args.seed)
-    pallet = repo.get_pallet(args.pallet)
-    box = repo.get_box(args.box)
+    try:
+        pallet = _resolve_pallet(repo, args)
+        box = _resolve_box(repo, args)
+    except ValueError as exc:
+        repo.close()
+        raise SystemExit(str(exc)) from exc
     tool = repo.get_tool(args.tool)
     try:
         reference_frame = _reference_frame_from_args(args.origin, args.axes)
@@ -381,9 +620,18 @@ def run_plan(args: argparse.Namespace) -> None:
 def run_stack(args: argparse.Namespace) -> None:
     repo = DataRepository(args.db)
     repo.initialize(args.seed)
-    pallet = repo.get_pallet(args.pallet)
-    box = repo.get_box(args.box)
+    try:
+        pallet = _resolve_pallet(repo, args)
+        box = _resolve_box(repo, args)
+    except ValueError as exc:
+        repo.close()
+        raise SystemExit(str(exc)) from exc
     tool = repo.get_tool(args.tool)
+    try:
+        interleaf = _resolve_interleaf(repo, args)
+    except KeyError as exc:
+        repo.close()
+        raise SystemExit(str(exc)) from exc
     try:
         reference_frame = _reference_frame_from_args(args.origin, args.axes)
     except ValueError as exc:  # pragma: no cover - defensive user input
@@ -410,6 +658,8 @@ def run_stack(args: argparse.Namespace) -> None:
         z_step=args.z_step,
         collision_checker=collision_checker,
         approach_overrides=overrides,
+        interleaf=interleaf,
+        interleaf_frequency=args.interleaf_frequency,
     )
 
     annotator = PlacementAnnotator(
@@ -460,15 +710,33 @@ def run_stack(args: argparse.Namespace) -> None:
         path = exporter.to_file(sequence, args.export)
         print(f"Sequence exported to {path}")
 
+    if sequence.interleaves:
+        print(
+            "Interfalde inserite:",
+            ", ".join(
+                f"dopo layer {entry.level} (+{entry.interleaf.thickness:.1f}mm)"
+                for entry in sequence.interleaves
+            ),
+        )
+
     repo.close()
 
 
 def run_archive(args: argparse.Namespace) -> None:
     repo = DataRepository(args.db)
     repo.initialize(args.seed)
-    pallet = repo.get_pallet(args.pallet)
-    box = repo.get_box(args.box)
+    try:
+        pallet = _resolve_pallet(repo, args)
+        box = _resolve_box(repo, args)
+    except ValueError as exc:
+        repo.close()
+        raise SystemExit(str(exc)) from exc
     tool = repo.get_tool(args.tool)
+    try:
+        interleaf = _resolve_interleaf(repo, args)
+    except KeyError as exc:
+        repo.close()
+        raise SystemExit(str(exc)) from exc
     try:
         reference_frame = _reference_frame_from_args(args.origin, args.axes)
     except ValueError as exc:  # pragma: no cover - defensive user input
@@ -503,6 +771,8 @@ def run_archive(args: argparse.Namespace) -> None:
             z_step=args.z_step,
             collision_checker=collision_checker,
             approach_overrides=overrides,
+            interleaf=interleaf,
+            interleaf_frequency=args.interleaf_frequency,
         )
         plan.metadata["approach_distance"] = f"{args.approach_distance:.2f}"
         plan.metadata["label_offset"] = f"{args.label_offset:.2f}"
@@ -541,40 +811,53 @@ def run_gui(args: argparse.Namespace) -> None:
 
     repo = DataRepository(args.db)
     repo.initialize(args.seed)
-    pallet = repo.get_pallet(args.pallet)
-    box = repo.get_box(args.box)
-    tool = repo.get_tool(args.tool)
+    pallets = repo.list_pallets()
+    boxes = repo.list_boxes()
+    tools = repo.list_tools()
+    interleaves = repo.list_interleaves()
+
+    def _default_selection(items, requested, label):
+        if not items:
+            repo.close()
+            raise SystemExit(f"Nessun {label} disponibile nel database.")
+        if requested is None:
+            return items[0].id
+        for item in items:
+            if item.id == requested:
+                return requested
+        repo.close()
+        raise SystemExit(f"{label} '{requested}' non trovato nel database.")
+
+    default_pallet_id = _default_selection(pallets, args.pallet, "pallet")
+    default_box_id = _default_selection(boxes, args.box, "box")
+    default_tool_id = _default_selection(tools, args.tool, "tool")
+
+    if args.interleaf:
+        if not any(interleaf.id == args.interleaf for interleaf in interleaves):
+            repo.close()
+            raise SystemExit(f"Interfalda '{args.interleaf}' non trovata nel database.")
     try:
         reference_frame = _reference_frame_from_args(args.origin, args.axes)
     except ValueError as exc:  # pragma: no cover - defensive user input
         repo.close()
         raise SystemExit(str(exc)) from exc
-
-    request = LayerRequest(
-        pallet=pallet,
-        box=box,
-        tool=tool,
-        start_corner=args.corner,
-        reference_frame=reference_frame,
-    )
-
-    if args.layers > 1:
-        sequence_planner = LayerSequencePlanner()
-        collision_checker = CollisionChecker()
-        sequence = sequence_planner.stack_layers(
-            request,
-            levels=args.layers,
-            corners=args.corners,
-            z_step=args.z_step,
-            collision_checker=collision_checker,
-        )
-        plan = sequence.layers[0]
-    else:
-        sequence = None
-        plan = _calculate_layer(request)
-
     try:
-        app = PalletGuiApp(plan=plan, request=request, sequence=sequence)
+        app = PalletGuiApp(
+            pallets=pallets,
+            boxes=boxes,
+            tools=tools,
+            interleaves=interleaves,
+            reference_frame=reference_frame,
+            default_pallet_id=default_pallet_id,
+            default_box_id=default_box_id,
+            default_tool_id=default_tool_id,
+            default_corner=args.corner,
+            default_layers=args.layers,
+            default_corners=args.corners,
+            default_z_step=args.z_step,
+            default_interleaf_id=args.interleaf,
+            default_interleaf_frequency=args.interleaf_frequency,
+        )
     except RuntimeError as exc:  # pragma: no cover - optional dependency
         repo.close()
         raise SystemExit(str(exc)) from exc
@@ -586,9 +869,18 @@ def run_gui(args: argparse.Namespace) -> None:
 def run_analyze(args: argparse.Namespace) -> None:
     repo = DataRepository(args.db)
     repo.initialize(args.seed)
-    pallet = repo.get_pallet(args.pallet)
-    box = repo.get_box(args.box)
+    try:
+        pallet = _resolve_pallet(repo, args)
+        box = _resolve_box(repo, args)
+    except ValueError as exc:
+        repo.close()
+        raise SystemExit(str(exc)) from exc
     tool = repo.get_tool(args.tool)
+    try:
+        interleaf = _resolve_interleaf(repo, args)
+    except KeyError as exc:
+        repo.close()
+        raise SystemExit(str(exc)) from exc
     try:
         reference_frame = _reference_frame_from_args(args.origin, args.axes)
     except ValueError as exc:  # pragma: no cover - defensive user input
@@ -611,6 +903,8 @@ def run_analyze(args: argparse.Namespace) -> None:
             corners=args.corners,
             z_step=args.z_step,
             collision_checker=CollisionChecker(),
+            interleaf=interleaf,
+            interleaf_frequency=args.interleaf_frequency,
         )
         metrics = compute_sequence_metrics(sequence)
         print(
@@ -663,6 +957,8 @@ def main() -> None:
         run_gui(args)
     elif args.command == "analyze":
         run_analyze(args)
+    elif args.command == "plc":
+        run_plc(args)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -5,7 +5,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from .models import Box, Dimensions, Pallet, PickupOffset, Tool
+from .models import Box, Dimensions, Interleaf, Pallet, PickupOffset, Tool
 
 
 class DataRepository:
@@ -44,6 +44,12 @@ class DataRepository:
                     offset_y REAL,
                     offset_z REAL
                 );
+                CREATE TABLE IF NOT EXISTS interleaves (
+                    id TEXT PRIMARY KEY,
+                    thickness REAL,
+                    weight REAL,
+                    material TEXT
+                );
                 """
             )
         if self._is_populated("pallets"):
@@ -60,6 +66,10 @@ class DataRepository:
             self.connection.executemany(
                 "INSERT OR REPLACE INTO tools VALUES (:id,:name,:max_boxes,:orientations,:offset_x,:offset_y,:offset_z)",
                 seed["tools"],
+            )
+            self.connection.executemany(
+                "INSERT OR REPLACE INTO interleaves VALUES (:id,:thickness,:weight,:material)",
+                seed.get("interleaves", []),
             )
 
     def _is_populated(self, table: str) -> bool:
@@ -136,6 +146,29 @@ class DataRepository:
                     int(value) for value in row["orientations"].split(",") if value
                 ],
                 pickup_offset=PickupOffset(row["offset_x"], row["offset_y"], row["offset_z"]),
+            )
+            for row in rows
+        ]
+
+    def get_interleaf(self, interleaf_id: str) -> Interleaf:
+        row = self.connection.execute("SELECT * FROM interleaves WHERE id=?", (interleaf_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"Interleaf {interleaf_id} not found")
+        return Interleaf(
+            id=row["id"],
+            thickness=row["thickness"],
+            weight=row["weight"],
+            material=row["material"],
+        )
+
+    def list_interleaves(self) -> list[Interleaf]:
+        rows = self.connection.execute("SELECT * FROM interleaves ORDER BY id").fetchall()
+        return [
+            Interleaf(
+                id=row["id"],
+                thickness=row["thickness"],
+                weight=row["weight"],
+                material=row["material"],
             )
             for row in rows
         ]

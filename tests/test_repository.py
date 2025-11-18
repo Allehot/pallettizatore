@@ -23,3 +23,13 @@ def test_repository_lists_entities(tmp_path):
     assert sorted(box.id for box in boxes) == ["BX-250", "BX-400"]
     assert tools[-1].pickup_offset.z == 60
     repo.close()
+
+
+def test_repository_interleaves(tmp_path):
+    repo = DataRepository(tmp_path / "verpal.db")
+    repo.initialize("data/seed_data.json")
+    interleaf = repo.get_interleaf("IL-CARTON")
+    assert interleaf.thickness == 3.0
+    catalog = repo.list_interleaves()
+    assert len(catalog) == 2
+    repo.close()

@@ -53,6 +53,16 @@ class Tool:
 
 
 @dataclass(frozen=True)
+class Interleaf:
+    """Thin separator placed between pallet layers."""
+
+    id: str
+    thickness: float
+    weight: float
+    material: str
+
+
+@dataclass(frozen=True)
 class ReferenceFrame:
     """Reference frame definition for placement coordinates."""
 
@@ -222,6 +232,7 @@ class LayerSequencePlan:
 
     layers: List[LayerPlan]
     metadata: dict[str, str] = field(default_factory=dict)
+    interleaves: List["InterleafPlacement"] = field(default_factory=list)
 
     def total_boxes(self) -> int:
         return sum(len(layer.placements) for layer in self.layers)
@@ -237,7 +248,18 @@ class LayerSequencePlan:
                 continue
             layer_height = max(placement.position.z for placement in layer.placements)
             highest = max(highest, layer_height)
+        for interleaf in self.interleaves:
+            highest = max(highest, interleaf.z_position + interleaf.interleaf.thickness)
         return highest
+
+
+@dataclass(frozen=True)
+class InterleafPlacement:
+    """Metadata describing where a slip-sheet has been inserted."""
+
+    level: int
+    z_position: float
+    interleaf: Interleaf
 
 
 def ensure_positive(value: float, *, name: str) -> float:

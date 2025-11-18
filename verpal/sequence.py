@@ -5,7 +5,16 @@ from dataclasses import replace
 from typing import Sequence
 
 from .collisions import CollisionChecker
-from .models import ApproachConfig, LayerPlan, LayerPlacement, LayerRequest, LayerSequencePlan, Vector3
+from .models import (
+    ApproachConfig,
+    Interleaf,
+    InterleafPlacement,
+    LayerPlan,
+    LayerPlacement,
+    LayerRequest,
+    LayerSequencePlan,
+    Vector3,
+)
 from .planner import RecursiveFiveBlockPlanner
 
 
@@ -24,17 +33,22 @@ class LayerSequencePlanner:
         z_step: float | None = None,
         collision_checker: CollisionChecker | None = None,
         approach_overrides: dict[str, ApproachConfig] | None = None,
+        interleaf: Interleaf | None = None,
+        interleaf_frequency: int = 1,
     ) -> LayerSequencePlan:
         if levels <= 0:
             raise ValueError("levels must be a positive integer")
         z_increment = z_step if z_step is not None else request.box.dimensions.height
         if z_increment <= 0:
             raise ValueError("z_step must be positive")
+        if interleaf_frequency <= 0:
+            raise ValueError("interleaf_frequency must be positive")
         ordered_corners = list(corners) if corners else [request.start_corner]
         if not ordered_corners:
             ordered_corners = [request.start_corner]
 
         layers: list[LayerPlan] = []
+        interleaves: list[InterleafPlacement] = []
         current_z = 0.0
         for level in range(levels):
             corner = ordered_corners[level % len(ordered_corners)]
@@ -70,6 +84,15 @@ class LayerSequencePlanner:
                 level_plan.collisions = [issue.description for issue in issues]
             layers.append(level_plan)
             current_z += z_increment
+            if (
+                interleaf is not None
+                and (level + 1) < levels
+                and ((level + 1) % interleaf_frequency == 0)
+            ):
+                interleaves.append(
+                    InterleafPlacement(level=level + 1, z_position=current_z, interleaf=interleaf)
+                )
+                current_z += interleaf.thickness
 
         metadata = {
             "levels": str(levels),
@@ -78,4 +101,13 @@ class LayerSequencePlanner:
             "reference_origin": request.reference_frame.origin,
             "reference_axes": request.reference_frame.axes_token,
         }
-        return LayerSequencePlan(layers=layers, metadata=metadata)
+        if interleaf is not None:
+            metadata.update(
+                {
+                    "interleaf_id": interleaf.id,
+                    "interleaf_thickness": f"{interleaf.thickness:.3f}",
+                    "interleaf_weight": f"{interleaf.weight:.3f}",
+                    "interleaf_frequency": str(interleaf_frequency),
+                }
+            )
+        return LayerSequencePlan(layers=layers, metadata=metadata, interleaves=interleaves)

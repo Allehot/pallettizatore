@@ -42,3 +42,34 @@ def test_sequence_planner_stacks_layers(tmp_path):
         assert not layer.collisions
 
     repo.close()
+
+
+def test_sequence_planner_with_interleaf(tmp_path):
+    db_path = tmp_path / "verpal.db"
+    repo = DataRepository(db_path)
+    repo.initialize("data/seed_data.json")
+    pallet = repo.get_pallet("EUR-EPAL")
+    box = repo.get_box("BX-250")
+    tool = repo.get_tool("TK-2")
+    interleaf = repo.get_interleaf("IL-CARTON")
+    request = LayerRequest(
+        pallet=pallet,
+        box=box,
+        tool=tool,
+        start_corner="SW",
+        reference_frame=ReferenceFrame(),
+    )
+
+    planner = LayerSequencePlanner()
+    sequence = planner.stack_layers(
+        request,
+        levels=2,
+        interleaf=interleaf,
+        interleaf_frequency=1,
+    )
+
+    assert sequence.interleaves
+    assert sequence.interleaves[0].level == 1
+    assert sequence.interleaves[0].interleaf.id == "IL-CARTON"
+    assert sequence.layers[1].placements[0].position.z > sequence.layers[0].placements[0].position.z
+    repo.close()

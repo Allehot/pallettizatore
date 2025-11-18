@@ -3,6 +3,8 @@ import json
 from verpal import (
     Box,
     Dimensions,
+    Interleaf,
+    InterleafPlacement,
     LayerPlacement,
     LayerPlan,
     LayerSequencePlan,
@@ -49,10 +51,16 @@ def test_exporter_serializes_layer(tmp_path):
 def test_exporter_serializes_sequence(tmp_path):
     exporter = PlanExporter(tmp_path)
     layer = build_layer()
-    sequence = LayerSequencePlan([layer, layer], metadata={"levels": "2"})
+    interleaf = Interleaf(id="IL", thickness=3.0, weight=0.5, material="carton")
+    sequence = LayerSequencePlan(
+        [layer, layer],
+        metadata={"levels": "2"},
+        interleaves=[InterleafPlacement(level=1, z_position=50.0, interleaf=interleaf)],
+    )
     path = exporter.to_file(sequence, "sequence.json")
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["type"] == "sequence"
     assert payload["levels"] == 2
     assert payload["total_boxes"] == 2
     assert len(payload["layers"]) == 2
+    assert payload["interleaves"][0]["id"] == "IL"

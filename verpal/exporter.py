@@ -35,6 +35,18 @@ class PlanExporter:
                 "total_boxes": plan.total_boxes(),
                 "layers": [self._layer_payload(layer, idx) for idx, layer in enumerate(plan.layers, start=1)],
             }
+            if plan.interleaves:
+                payload["interleaves"] = [
+                    {
+                        "level": entry.level,
+                        "z_position": entry.z_position,
+                        "id": entry.interleaf.id,
+                        "thickness": entry.interleaf.thickness,
+                        "weight": entry.interleaf.weight,
+                        "material": entry.interleaf.material,
+                    }
+                    for entry in plan.interleaves
+                ]
         else:
             payload = self._layer_payload(plan, 1)
             payload["type"] = "layer"
