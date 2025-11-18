@@ -1,6 +1,7 @@
 """VerPal palletization planning toolkit."""
 
 from .annotations import PlacementAnnotation, PlacementAnnotator
+from .approach import apply_approach, parse_approach_overrides
 from .models import (
     Box,
     Dimensions,
@@ -72,6 +73,8 @@ __all__ = [
     "compute_sequence_metrics",
     "PlacementAnnotator",
     "PlacementAnnotation",
+    "parse_approach_overrides",
+    "apply_approach",
     "PalletGuiApp",
     "LayerViewModel",
     "PlacementGlyph",

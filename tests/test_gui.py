@@ -5,7 +5,7 @@ from verpal import (
     RecursiveFiveBlockPlanner,
     ReferenceFrame,
 )
-from verpal.gui import build_layer_view_model, compute_height_report
+from verpal.gui import build_layer_view_model, build_metric_summary, compute_height_report
 
 
 def _build_request(tmp_path):
@@ -48,3 +48,16 @@ def test_compute_height_report_handles_sequence(tmp_path):
     assert rows[-1].label == "Totale"
     expected_total = request.box.dimensions.height * 3
     assert abs(rows[-1].top - expected_total) < 1e-6
+
+
+def test_metric_summary_includes_sequence_data(tmp_path):
+    request = _build_request(tmp_path)
+    sequence_planner = LayerSequencePlanner()
+    sequence = sequence_planner.stack_layers(request, levels=2, corners=["SW"], z_step=None)
+    lines = build_metric_summary(sequence.layers[0], sequence)
+    labels = {line.label for line in lines}
+    assert "Modalità" in labels
+    assert "Strati" in labels
+    assert "Peso totale" in labels
+    total_line = next(line for line in lines if line.label == "Peso totale")
+    assert total_line.value.endswith("kg")

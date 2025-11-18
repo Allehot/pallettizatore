@@ -2,10 +2,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
+from .annotations import PlacementAnnotator, PlacementAnnotation
+from .approach import apply_approach, parse_approach_overrides
 from .collisions import CollisionChecker
+from .exporter import PlanExporter
+from .metrics import compute_layer_metrics, compute_sequence_metrics
 from .models import (
+    ApproachConfig,
     Box,
     Interleaf,
     LayerPlan,
@@ -17,6 +23,7 @@ from .models import (
     Tool,
     Vector3,
 )
+from .plc import SiemensPLCExporter
 from .planner import RecursiveFiveBlockPlanner
 from .sequence import LayerSequencePlanner
 
@@ -50,6 +57,14 @@ class HeightRow:
     label: str
     base: float
     top: float
+
+
+@dataclass(frozen=True)
+class MetricLine:
+    """Single entry used to show metric summaries inside the GUI."""
+
+    label: str
+    value: str
 
 
 _COLOR_PALETTE = [
@@ -122,6 +137,49 @@ def compute_height_report(
     return rows
 
 
+def build_metric_summary(
+    plan: LayerPlan,
+    sequence: LayerSequencePlan | None = None,
+) -> list[MetricLine]:
+    """Return formatted metric rows for the active layer or sequence."""
+
+    if sequence is not None:
+        metrics = compute_sequence_metrics(sequence)
+        lines: list[MetricLine] = [
+            MetricLine("Modalità", "Sequenza multistrato"),
+            MetricLine("Strati", str(metrics.layers)),
+            MetricLine("Scatole totali", str(metrics.total_boxes)),
+        ]
+    else:
+        metrics = compute_layer_metrics(plan)
+        lines = [
+            MetricLine("Modalità", "Layer singolo"),
+            MetricLine("Scatole totali", str(metrics.total_boxes)),
+        ]
+    lines.append(MetricLine("Peso totale", f"{metrics.total_weight:.2f} kg"))
+    lines.append(
+        MetricLine(
+            "Centro di massa",
+            "x={:.1f} y={:.1f} z={:.1f} mm".format(
+                metrics.center_of_mass.x,
+                metrics.center_of_mass.y,
+                metrics.center_of_mass.z,
+            ),
+        )
+    )
+    lines.append(
+        MetricLine(
+            "Ingombro",
+            "{:.1f} x {:.1f} mm".format(
+                metrics.footprint_width,
+                metrics.footprint_depth,
+            ),
+        )
+    )
+    lines.append(MetricLine("Altezza max", f"{metrics.max_height:.1f} mm"))
+    return lines
+
+
 def _box_footprint(width: float, depth: float, rotation: int) -> tuple[float, float]:
     if rotation % 180 == 0:
         return width, depth
@@ -141,15 +199,15 @@ def _color_for_block(block: str, idx: int) -> str:
     return _COLOR_PALETTE[hash(token) % len(_COLOR_PALETTE)]
 
 
-def _import_tk() -> tuple[object, object, object]:  # pragma: no cover - runtime import
+def _import_tk() -> tuple[object, object, object, object]:  # pragma: no cover - runtime import
     try:
         import tkinter as tk
-        from tkinter import messagebox, ttk
+        from tkinter import filedialog, messagebox, ttk
     except ImportError as exc:  # pragma: no cover - optional dependency
         raise RuntimeError(
             "Tkinter non disponibile. Installa il pacchetto python3-tk per usare l'interfaccia grafica."
         ) from exc
-    return tk, messagebox, ttk
+    return tk, messagebox, ttk, filedialog
 
 
 def _import_matplotlib() -> tuple[object, object, object]:  # pragma: no cover - runtime import
@@ -331,6 +389,10 @@ class PalletGuiApp:
         default_z_step: float | None = None,
         default_interleaf_id: str | None = None,
         default_interleaf_frequency: int = 1,
+        default_approach_direction: str | None = None,
+        default_approach_distance: float = 75.0,
+        default_label_offset: float = 5.0,
+        default_approach_overrides: Sequence[str] | None = None,
     ) -> None:
         self.pallets = list(pallets)
         self.boxes = list(boxes)
@@ -340,14 +402,23 @@ class PalletGuiApp:
         self._layer_planner = RecursiveFiveBlockPlanner()
         self._sequence_planner = LayerSequencePlanner(self._layer_planner)
         self._collision_checker = CollisionChecker()
+        self._default_approach_distance = default_approach_distance
+        self._default_label_offset = default_label_offset
+        self._annotator = PlacementAnnotator(
+            default_approach=default_approach_distance,
+            label_offset=default_label_offset,
+        )
+        self._annotations: list[PlacementAnnotation] = []
 
-        tk_module, messagebox, ttk = _import_tk()
+        tk_module, messagebox, ttk, filedialog = _import_tk()
         Figure, FigureCanvasTkAgg, Poly3DCollection = _import_matplotlib()
         self._messagebox = messagebox
+        self._filedialog = filedialog
         self._FigureCanvasTkAgg = FigureCanvasTkAgg
         self._Figure = Figure
         self._Poly3DCollection = Poly3DCollection
         DragCanvas = _build_canvas_class(tk_module)
+        self._plc_exporter = SiemensPLCExporter()
 
         self.root = tk_module.Tk()
         self.root.title("VerPal - Configuratore Grafico")
@@ -369,6 +440,18 @@ class PalletGuiApp:
         self.interleaf_frequency_var = tk_module.IntVar(
             value=max(1, default_interleaf_frequency)
         )
+        direction_default = (
+            (default_approach_direction or "").strip().upper()
+        )
+        self.approach_direction_var = tk_module.StringVar(value=direction_default)
+        self.approach_distance_var = tk_module.StringVar(
+            value=f"{default_approach_distance:.1f}"
+        )
+        self.label_offset_var = tk_module.StringVar(
+            value=f"{default_label_offset:.1f}"
+        )
+        override_text = " ".join(default_approach_overrides or [])
+        self.approach_override_var = tk_module.StringVar(value=override_text)
 
         try:
             self.request, self.plan, self.sequence = self._build_plan()
@@ -410,7 +493,9 @@ class PalletGuiApp:
         right = ttk.Frame(main)
         right.grid(row=0, column=1, sticky="nsew")
         right.rowconfigure(0, weight=0)
-        right.rowconfigure(1, weight=1)
+        right.rowconfigure(1, weight=0)
+        right.rowconfigure(2, weight=1)
+        right.rowconfigure(3, weight=0)
         right.columnconfigure(0, weight=1)
 
         config = ttk.LabelFrame(right, text="Dati disponibili nel DB")
@@ -519,13 +604,109 @@ class PalletGuiApp:
             row=9, column=0, columnspan=2, sticky="ew", padx=2, pady=(8, 2)
         )
 
+        approach = ttk.LabelFrame(right, text="Accostamento e annotazioni")
+        approach.grid(row=1, column=0, sticky="ew", padx=4, pady=4)
+        for i in range(2):
+            approach.columnconfigure(i, weight=1)
+        ttk.Label(approach, text="Direzione (lascia vuoto per usare il corner)").grid(
+            row=0, column=0, sticky="w", padx=2, pady=2
+        )
+        direction_combo = ttk.Combobox(
+            approach,
+            textvariable=self.approach_direction_var,
+            values=["", "N", "S", "E", "W", "NE", "NW", "SE", "SW"],
+        )
+        direction_combo.grid(row=0, column=1, sticky="ew", padx=2, pady=2)
+        direction_combo.bind("<<ComboboxSelected>>", self._on_inputs_changed)
+        direction_combo.bind("<Return>", self._on_inputs_changed)
+
+        ttk.Label(approach, text="Distanza accostamento (mm)").grid(
+            row=1, column=0, sticky="w", padx=2, pady=2
+        )
+        distance_entry = ttk.Entry(approach, textvariable=self.approach_distance_var)
+        distance_entry.grid(row=1, column=1, sticky="ew", padx=2, pady=2)
+        distance_entry.bind("<Return>", self._on_inputs_changed)
+        distance_entry.bind("<FocusOut>", self._on_inputs_changed)
+
+        ttk.Label(approach, text="Offset etichetta (mm)").grid(
+            row=2, column=0, sticky="w", padx=2, pady=2
+        )
+        label_entry = ttk.Entry(approach, textvariable=self.label_offset_var)
+        label_entry.grid(row=2, column=1, sticky="ew", padx=2, pady=2)
+        label_entry.bind("<Return>", self._on_inputs_changed)
+        label_entry.bind("<FocusOut>", self._on_inputs_changed)
+
+        ttk.Label(approach, text="Override blocchi (es. center=E:110)").grid(
+            row=3, column=0, sticky="w", padx=2, pady=2
+        )
+        override_entry = ttk.Entry(approach, textvariable=self.approach_override_var)
+        override_entry.grid(row=3, column=1, sticky="ew", padx=2, pady=2)
+        override_entry.bind("<Return>", self._on_inputs_changed)
+        override_entry.bind("<FocusOut>", self._on_inputs_changed)
+
+        ttk.Button(approach, text="Anteprima etichette", command=self._show_annotations).grid(
+            row=4, column=0, sticky="ew", padx=2, pady=(4, 2)
+        )
+        ttk.Button(approach, text="Verifica collisioni", command=self._check_collisions).grid(
+            row=4, column=1, sticky="ew", padx=2, pady=(4, 2)
+        )
+
+        info_panel = ttk.Frame(right)
+        info_panel.grid(row=2, column=0, sticky="nsew", padx=4)
+        info_panel.rowconfigure(0, weight=1)
+        info_panel.rowconfigure(1, weight=0)
+        info_panel.columnconfigure(0, weight=1)
+
         self.figure = self._Figure(figsize=(4, 4))
         self.ax = self.figure.add_subplot(111, projection="3d")
-        self.canvas3d = self._FigureCanvasTkAgg(self.figure, master=right)
-        self.canvas3d.get_tk_widget().grid(row=1, column=0, sticky="nsew")
+        self.canvas3d = self._FigureCanvasTkAgg(self.figure, master=info_panel)
+        self.canvas3d.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+
+        placements = ttk.LabelFrame(info_panel, text="Dettagli posizionamenti")
+        placements.grid(row=1, column=0, sticky="ew", pady=4)
+        placements.columnconfigure(0, weight=1)
+        columns = ("idx", "block", "center", "rotation", "approach", "label")
+        self.placement_tree = ttk.Treeview(
+            placements,
+            columns=columns,
+            show="headings",
+            height=6,
+        )
+        headings = {
+            "idx": "#",
+            "block": "Blocco",
+            "center": "Centro (mm)",
+            "rotation": "Rotazione",
+            "approach": "Accostamento",
+            "label": "Etichetta (mm)",
+        }
+        for column, title in headings.items():
+            self.placement_tree.heading(column, text=title)
+            self.placement_tree.column(column, width=110 if column != "center" else 220)
+        self.placement_tree.grid(row=0, column=0, sticky="ew")
+        tree_scroll = ttk.Scrollbar(placements, orient="vertical", command=self.placement_tree.yview)
+        tree_scroll.grid(row=0, column=1, sticky="ns")
+        self.placement_tree.configure(yscrollcommand=tree_scroll.set)
+
+        metrics_frame = ttk.LabelFrame(right, text="Metriche e export")
+        metrics_frame.grid(row=3, column=0, sticky="ew", padx=4, pady=4)
+        metrics_frame.columnconfigure(0, weight=1)
+        metrics_frame.columnconfigure(1, weight=1)
+        self.metrics_var = tk_module.StringVar()
+        ttk.Label(metrics_frame, textvariable=self.metrics_var, justify="left").grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=2, pady=2
+        )
+        ttk.Button(metrics_frame, text="Esporta JSON", command=self._export_json).grid(
+            row=1, column=0, sticky="ew", padx=2, pady=2
+        )
+        ttk.Button(metrics_frame, text="Esporta PLC", command=self._export_plc).grid(
+            row=1, column=1, sticky="ew", padx=2, pady=2
+        )
 
         self.status_var = tk_module.StringVar()
-        self.status_var.set("Usa i menu per cambiare pallet, scatola e interfalda.")
+        self.status_var.set(
+            "Configura pallet, scatole, falde e parametri di accostamento dalla barra destra."
+        )
         ttk.Label(main, textvariable=self.status_var, anchor="w").grid(
             row=1,
             column=0,
@@ -535,6 +716,8 @@ class PalletGuiApp:
             pady=2,
         )
 
+        self._refresh_annotations()
+        self._refresh_metrics()
         self._render_3d()
 
     def run(self) -> None:  # pragma: no cover - UI loop
@@ -542,6 +725,8 @@ class PalletGuiApp:
 
     def _on_canvas_change(self, _plan: LayerPlan) -> None:  # pragma: no cover - UI callback
         self.canvas.refresh()
+        self._refresh_annotations()
+        self._refresh_metrics()
         self._render_3d()
 
     def _update_status(self, message: str) -> None:  # pragma: no cover - UI callback
@@ -554,6 +739,38 @@ class PalletGuiApp:
             return
         lines = [f"{row.label}: base={row.base:.1f}mm top={row.top:.1f}mm" for row in rows]
         self._messagebox.showinfo("Quote", "\n".join(lines))
+
+    def _show_annotations(self) -> None:  # pragma: no cover - UI callback
+        if not self._annotations:
+            self._messagebox.showinfo(
+                "Annotazioni",
+                "Nessuna informazione di etichetta disponibile per lo strato attivo.",
+            )
+            return
+        lines = []
+        for annotation in self._annotations:
+            label_pos = self._restore_position(annotation.label_position)
+            lines.append(
+                "Placement #{idx}: label=({lx:.1f},{ly:.1f},{lz:.1f})mm | {dir} {dist:.1f}mm".format(
+                    idx=annotation.placement_index + 1,
+                    lx=label_pos.x,
+                    ly=label_pos.y,
+                    lz=label_pos.z,
+                    dir=annotation.approach_direction,
+                    dist=annotation.approach_distance,
+                )
+            )
+        self._messagebox.showinfo("Annotazioni", "\n".join(lines))
+
+    def _check_collisions(self) -> None:  # pragma: no cover - UI callback
+        collisions = self._collision_checker.validate(self.plan, self.request)
+        if not collisions:
+            self._messagebox.showinfo("Collisioni", "Nessuna collisione rilevata")
+            self.status_var.set("Nessuna collisione o sbordo rilevato")
+            return
+        lines = [collision.description for collision in collisions]
+        self._messagebox.showwarning("Collisioni", "\n".join(lines))
+        self.status_var.set(f"Trovate {len(lines)} collisioni")
 
     def _reset_view(self) -> None:  # pragma: no cover - UI callback
         self.canvas.refresh()
@@ -586,6 +803,26 @@ class PalletGuiApp:
         for layer in layers:
             for placement in layer.placements:
                 self._draw_box(placement)
+        for annotation in self._annotations:
+            label_pos = self._restore_position(annotation.label_position)
+            self.ax.scatter(
+                label_pos.x,
+                label_pos.y,
+                label_pos.z,
+                color="#e63946",
+                s=12,
+            )
+            vector = annotation.approach_vector
+            self.ax.quiver(
+                label_pos.x,
+                label_pos.y,
+                label_pos.z,
+                vector.x,
+                vector.y,
+                vector.z,
+                color="#e63946",
+                arrow_length_ratio=0.2,
+            )
         self.canvas3d.draw()
 
     def _build_plan(self) -> tuple[LayerRequest, LayerPlan, LayerSequencePlan | None]:
@@ -609,6 +846,21 @@ class PalletGuiApp:
         else:
             sequence = None
             plan = self._layer_planner.plan_layer(request)
+        direction, distance, overrides, custom_direction = self._resolve_approach_settings()
+        label_offset = self._label_offset_value()
+        self._annotator = PlacementAnnotator(
+            default_approach=distance,
+            label_offset=label_offset,
+        )
+        if sequence is not None:
+            sequence.metadata["approach_distance"] = f"{distance:.2f}"
+            if custom_direction:
+                sequence.metadata["approach_direction"] = direction
+            for layer in sequence.layers:
+                layer_direction = direction if custom_direction else layer.start_corner.upper()
+                apply_approach(layer, layer_direction, distance, overrides)
+        else:
+            apply_approach(plan, direction, distance, overrides)
         return request, plan, sequence
 
     def _build_request(self) -> LayerRequest:
@@ -629,6 +881,28 @@ class PalletGuiApp:
             return None
         return self._find_by_id(self.interleaves, value, "Interfalda")
 
+    def _resolve_approach_settings(self) -> tuple[str, float, dict[str, ApproachConfig], bool]:
+        raw_direction = (self.approach_direction_var.get() or "").strip().upper()
+        custom_direction = bool(raw_direction)
+        direction = raw_direction or (self.corner_var.get() or "SW").upper()
+        distance = self._approach_distance_value()
+        overrides = parse_approach_overrides(self.approach_override_var.get())
+        return direction, distance, overrides, custom_direction
+
+    def _approach_distance_value(self) -> float:
+        value = self._parse_float(self.approach_distance_var.get())
+        if value is None:
+            value = self._default_approach_distance
+        if value <= 0:
+            raise ValueError("La distanza di accostamento deve essere positiva")
+        return value
+
+    def _label_offset_value(self) -> float:
+        value = self._parse_float(self.label_offset_var.get())
+        if value is None:
+            return self._default_label_offset
+        return value
+
     def _on_inputs_changed(self, *_):  # pragma: no cover - UI callback
         try:
             request, plan, sequence = self._build_plan()
@@ -641,6 +915,8 @@ class PalletGuiApp:
         self.canvas.request = request
         self.canvas.plan = plan
         self.canvas.refresh()
+        self._refresh_annotations()
+        self._refresh_metrics()
         self._render_3d()
         self.status_var.set(
             "Schema aggiornato per pallet {p} e scatola {b}".format(
@@ -704,12 +980,93 @@ class PalletGuiApp:
         poly = self._Poly3DCollection(faces, facecolors=color, edgecolors="#111827", linewidths=0.5, alpha=0.6)
         self.ax.add_collection3d(poly)
 
+    def _restore_position(self, point: Vector3) -> Vector3:
+        return self.request.reference_frame.restore(
+            point,
+            pallet=self.request.pallet,
+            overhang_x=self.request.overhang_x,
+            overhang_y=self.request.overhang_y,
+        )
+
+    def _refresh_annotations(self) -> None:
+        if not hasattr(self, "placement_tree"):
+            return
+        if self.plan.box is None:
+            self._annotations = []
+        else:
+            self._annotations = self._annotator.annotate(self.plan)
+        for child in self.placement_tree.get_children():
+            self.placement_tree.delete(child)
+        if not self._annotations:
+            return
+        for placement, annotation in zip(self.plan.placements, self._annotations):
+            center = self._restore_position(placement.position)
+            label_pos = self._restore_position(annotation.label_position)
+            self.placement_tree.insert(
+                "",
+                "end",
+                values=(
+                    str(placement.sequence_index + 1),
+                    placement.block or "-",
+                    "x={:.1f} y={:.1f} z={:.1f}".format(center.x, center.y, center.z),
+                    f"{placement.rotation}°",
+                    "{dir} {dist:.1f}mm".format(
+                        dir=annotation.approach_direction,
+                        dist=annotation.approach_distance,
+                    ),
+                    "x={:.1f} y={:.1f} z={:.1f}".format(
+                        label_pos.x,
+                        label_pos.y,
+                        label_pos.z,
+                    ),
+                ),
+            )
+
+    def _refresh_metrics(self) -> None:
+        lines = build_metric_summary(self.plan, self.sequence)
+        if not lines:
+            self.metrics_var.set("Nessuna metrica disponibile")
+        else:
+            self.metrics_var.set("\n".join(f"{line.label}: {line.value}" for line in lines))
+
+    def _active_plan(self) -> LayerPlan | LayerSequencePlan:
+        return self.sequence if self.sequence is not None else self.plan
+
+    def _export_json(self) -> None:  # pragma: no cover - UI callback
+        filename = self._choose_export_path("json")
+        if not filename:
+            return
+        path = Path(filename)
+        target = self._active_plan()
+        exporter = PlanExporter(base_path=path.parent)
+        exporter.to_file(target, path.name)
+        self._messagebox.showinfo("Export JSON", f"File salvato in {path}")
+        self.status_var.set(f"JSON salvato in {path}")
+
+    def _export_plc(self) -> None:  # pragma: no cover - UI callback
+        filename = self._choose_export_path("s7")
+        if not filename:
+            return
+        path = Path(filename)
+        self._plc_exporter.to_file(self._active_plan(), path)
+        self._messagebox.showinfo("Export PLC", f"File PLC salvato in {path}")
+        self.status_var.set(f"PLC salvato in {path}")
+
+    def _choose_export_path(self, extension: str) -> str | None:  # pragma: no cover - UI helper
+        return self._filedialog.asksaveasfilename(
+            defaultextension=f".{extension}",
+            filetypes=[(extension.upper(), f"*.{extension}"), ("Tutti i file", "*.*")],
+            title="Seleziona il file di destinazione",
+        )
+
 
 __all__ = [
     "PlacementGlyph",
     "LayerViewModel",
     "HeightRow",
+    "MetricLine",
     "build_layer_view_model",
     "compute_height_report",
+    "build_metric_summary",
     "PalletGuiApp",
 ]

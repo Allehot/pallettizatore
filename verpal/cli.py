@@ -2,14 +2,13 @@
 from __future__ import annotations
 
 import argparse
-from typing import Dict
+from .approach import apply_approach, parse_approach_overrides
 
 from .annotations import PlacementAnnotator
 from .collisions import CollisionChecker
 from .exporter import PlanExporter
 from .metrics import compute_layer_metrics, compute_sequence_metrics
 from .models import (
-    ApproachConfig,
     Box,
     Dimensions,
     Interleaf,
@@ -182,6 +181,27 @@ def build_parser() -> argparse.ArgumentParser:
     _add_pallet_override_args(gui_parser)
     _add_box_override_args(gui_parser)
     _add_interleaf_args(gui_parser)
+    gui_parser.add_argument(
+        "--approach-distance",
+        type=float,
+        default=75.0,
+        help="Ampiezza (mm) del vettore di accostamento predefinito",
+    )
+    gui_parser.add_argument(
+        "--approach-direction",
+        help="Direzione di accostamento fissa (lascia vuoto per seguire il corner)",
+    )
+    gui_parser.add_argument(
+        "--approach-override",
+        action="append",
+        help="Override blocchi nel formato blocco=DIREZIONE:DISTANZA",
+    )
+    gui_parser.add_argument(
+        "--label-offset",
+        type=float,
+        default=5.0,
+        help="Offset etichetta rispetto al lato della scatola",
+    )
     gui_parser.add_argument("--db", default="verpal.db", help="Percorso database")
     gui_parser.add_argument("--seed", default="data/seed_data.json", help="Seed data path")
 
@@ -337,36 +357,11 @@ def _non_negative_value(value: float | None, fallback: float, name: str) -> floa
     return value
 
 
-def _parse_overrides(values: list[str] | None) -> Dict[str, ApproachConfig]:
-    overrides: Dict[str, ApproachConfig] = {}
-    if not values:
-        return overrides
-    for value in values:
-        try:
-            block, payload = value.split("=", 1)
-            direction, distance = payload.split(":", 1)
-            overrides[block.strip().lower()] = ApproachConfig(
-                direction=direction.strip().upper(),
-                distance=float(distance),
-            )
-        except ValueError as exc:
-            raise ValueError(
-                f"Formato override non valido '{value}'. Usa blocco=DIREZIONE:DISTANZA"
-            ) from exc
-    return overrides
-
-
 def _reference_frame_from_args(origin: str, axes: str) -> ReferenceFrame:
     axes_token = (axes or "EN").strip().upper()
     if len(axes_token) != 2:
         raise ValueError("Formato assi non valido. Usa due lettere (E/W + N/S)")
     return ReferenceFrame(origin=origin.strip(), x_axis=axes_token[0], y_axis=axes_token[1])
-
-
-def _apply_approach(plan: LayerPlan, direction: str, distance: float, overrides: Dict[str, ApproachConfig]) -> None:
-    plan.metadata["approach_direction"] = direction
-    plan.metadata["approach_distance"] = f"{distance:.2f}"
-    plan.approach_overrides = overrides.copy()
 
 
 def _calculate_layer(request: LayerRequest) -> LayerPlan:
@@ -489,7 +484,7 @@ def run_plc(args: argparse.Namespace) -> None:
     )
 
     try:
-        overrides = _parse_overrides(args.approach_override)
+        overrides = parse_approach_overrides(args.approach_override)
     except ValueError as exc:  # pragma: no cover - defensive user input
         repo.close()
         raise SystemExit(str(exc)) from exc
@@ -515,11 +510,11 @@ def run_plc(args: argparse.Namespace) -> None:
         )
         for layer in plan.layers:
             layer_direction = (args.approach_direction or layer.start_corner).upper()
-            _apply_approach(layer, layer_direction, args.approach_distance, overrides)
+            apply_approach(layer, layer_direction, args.approach_distance, overrides)
     else:
         plan = _calculate_layer(request)
         direction = (args.approach_direction or args.corner).upper()
-        _apply_approach(plan, direction, args.approach_distance, overrides)
+        apply_approach(plan, direction, args.approach_distance, overrides)
 
     exporter = SiemensPLCExporter(annotator=annotator)
     path = exporter.to_file(plan, args.target)
@@ -555,11 +550,11 @@ def run_plan(args: argparse.Namespace) -> None:
     collisions = plan.collisions
 
     try:
-        overrides = _parse_overrides(args.approach_override)
+        overrides = parse_approach_overrides(args.approach_override)
     except ValueError as exc:  # pragma: no cover - defensive user input
         raise SystemExit(str(exc)) from exc
     approach_direction = (args.approach_direction or args.corner).upper()
-    _apply_approach(plan, approach_direction, args.approach_distance, overrides)
+    apply_approach(plan, approach_direction, args.approach_distance, overrides)
 
     print(f"Computed orientation: {plan.orientation}°")
     print(f"Fill ratio: {plan.fill_ratio:.2%}")
@@ -645,7 +640,7 @@ def run_stack(args: argparse.Namespace) -> None:
     )
 
     try:
-        overrides = _parse_overrides(args.approach_override)
+        overrides = parse_approach_overrides(args.approach_override)
     except ValueError as exc:  # pragma: no cover - defensive user input
         raise SystemExit(str(exc)) from exc
 
@@ -679,7 +674,7 @@ def run_stack(args: argparse.Namespace) -> None:
             f"Layer {idx}: corner={layer.start_corner} orientation={layer.orientation} fill={layer.fill_ratio:.2%}"
         )
         layer_direction = (args.approach_direction or layer.start_corner).upper()
-        _apply_approach(layer, layer_direction, args.approach_distance, overrides)
+        apply_approach(layer, layer_direction, args.approach_distance, overrides)
 
         annotations = annotator.annotate(layer)
         if annotations:
@@ -750,7 +745,7 @@ def run_archive(args: argparse.Namespace) -> None:
     )
 
     try:
-        overrides = _parse_overrides(args.approach_override)
+        overrides = parse_approach_overrides(args.approach_override)
     except ValueError as exc:  # pragma: no cover - defensive user input
         raise SystemExit(str(exc)) from exc
 
@@ -780,11 +775,11 @@ def run_archive(args: argparse.Namespace) -> None:
             plan.metadata["approach_direction"] = args.approach_direction.upper()
         for layer in plan.layers:
             layer_direction = (args.approach_direction or layer.start_corner).upper()
-            _apply_approach(layer, layer_direction, args.approach_distance, overrides)
+            apply_approach(layer, layer_direction, args.approach_distance, overrides)
     else:
         plan = _calculate_layer(request)
         direction = (args.approach_direction or args.corner).upper()
-        _apply_approach(plan, direction, args.approach_distance, overrides)
+        apply_approach(plan, direction, args.approach_distance, overrides)
 
     notes = _build_notes(args.note)
     project = archiver.build(
@@ -857,6 +852,10 @@ def run_gui(args: argparse.Namespace) -> None:
             default_z_step=args.z_step,
             default_interleaf_id=args.interleaf,
             default_interleaf_frequency=args.interleaf_frequency,
+            default_approach_direction=args.approach_direction,
+            default_approach_distance=args.approach_distance,
+            default_label_offset=args.label_offset,
+            default_approach_overrides=args.approach_override,
         )
     except RuntimeError as exc:  # pragma: no cover - optional dependency
         repo.close()

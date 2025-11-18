@@ -111,18 +111,31 @@ python -m verpal.cli gui --pallet EUR-EPAL --box BX-250 --tool TK-2 --layers 3 -
 ```
 
 Se ometti i flag `--pallet`, `--box` o `--tool` la GUI parte comunque utilizzando il primo record disponibile nel database e ti
-permette di scegliere tutto direttamente dall'interfaccia.
+permette di scegliere tutto direttamente dall'interfaccia. Puoi inoltre passare direttamente da riga di comando i nuovi flag
+`--approach-direction`, `--approach-distance`, `--label-offset` e `--approach-override` per aprire la sessione già impostata con
+gli stessi parametri di accostamento utilizzati nei workflow CLI.
 
 La finestra mostra a sinistra il canvas 2D con il perimetro della pedana: è possibile trascinare ogni presa (drag&drop) per
 verificare rapidamente l'effetto di micro-regolazioni. Sul lato destro trovi il pannello **Dati disponibili nel DB** con
 menu a discesa dedicati alla scelta del **pallet**, della **scatola**, del **tool** e dell'eventuale **interfalda**, oltre a
 spinbox per numero di strati e frequenza delle falde e campi per corner/z-step personalizzati. Ogni modifica rilancia il
-calcolo dell'algoritmo ricorsivo e aggiorna anche la sequenza multistrato. I pulsanti **Calcola quote** e **Reset vista**
-restano disponibili per consultare rapidamente le quote base/top o per tornare allo stato iniziale. A destra è sempre
-disponibile la vista 3D della paletta completa con aggiornamento in tempo reale, inclusa l'altezza risultante dal settaggio
-delle interfalde.
+calcolo dell'algoritmo ricorsivo e aggiorna anche la sequenza multistrato. Subito sotto è presente il pannello **Accostamento
+e annotazioni** che permette di impostare la direzione/distanza di accostamento predefinite, l'offset dell'etichetta e gli
+eventuali override blocco per blocco direttamente dall'interfaccia, con i pulsanti **Anteprima etichette** e **Verifica
+collisioni** che consentono di validare i dati senza tornare in CLI. I pulsanti **Calcola quote** e **Reset vista** restano
+disponibili per consultare rapidamente le quote base/top o per tornare allo stato iniziale. A destra è sempre disponibile la
+vista 3D della paletta completa con aggiornamento in tempo reale, inclusa l'altezza risultante dal settaggio delle interfalde e
+ora arricchita dai marker rossi che rappresentano la posizione dell'etichetta e il vettore di accostamento relativo ad ogni
+presa.
 
-L'applicazione stamperà il rapporto di riempimento, le informazioni sui blocchi generati, i controlli di collisione e il numero di snap point calcolati. Il file `layer.json` contiene il payload pronto per essere trasmesso via ethernet o seriale.
+La parte inferiore della colonna destra ospita il riquadro **Dettagli posizionamenti** con una tabella che per ogni presa
+mostra centro, rotazione, direzione/ampiezza dell'accostamento e coordinate dell'etichetta nel sistema di riferimento selezionato.
+Subito sotto è sempre disponibile il pannello **Metriche e export** che riepiloga modalità (layer singolo o sequenza), numero di
+strati, peso totale, centro di massa e ingombro calcolati tramite `verpal.metrics`. Dallo stesso pannello puoi aprire il file
+dialog e generare al volo sia il JSON completo del progetto sia il file `#VERPAL-S7` pronto per il PLC Siemens, senza uscire
+dall'interfaccia grafica.
+
+L'applicazione stamperà il rapporto di riempimento, le informazioni sui blocchi generati, i controlli di collisione e il numero di snap point calcolati. I file prodotti dai pulsanti di export sono immediatamente pronti per il trasferimento via ethernet o seriale.
 
 ## Calcolo automatico e generazione schemi
 - **Algoritmo euristico ricorsivo a 5 blocchi** per il calcolo automatico dello strato ottimizzato.
@@ -136,6 +149,7 @@ L'applicazione stamperà il rapporto di riempimento, le informazioni sui blocchi
 - **Render 3D in tempo reale** dello strato e dell'intera paletta, con comandi di rotazione, traslazione e zoom.
 - **Esploso dei piani** della paletta per analisi visiva rapida.
 - **Anteprima etichette e vettori di accostamento** direttamente dalla CLI grazie al nuovo `PlacementAnnotator`.
+- **Pannello accostamenti della GUI** con override blocchi, anteprima etichette/collisioni e tabella riepilogativa delle prese.
 - **Report metrici** (massa totale, centro di massa, ingombro, altezza) prodotti tramite il comando `analyze` o le API `verpal.metrics`.
 
 ## Dati e configurazione
