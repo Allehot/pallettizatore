@@ -137,6 +137,16 @@ dall'interfaccia grafica.
 
 L'applicazione stamperà il rapporto di riempimento, le informazioni sui blocchi generati, i controlli di collisione e il numero di snap point calcolati. I file prodotti dai pulsanti di export sono immediatamente pronti per il trasferimento via ethernet o seriale.
 
+## Funzioni avanzate KomPonGo (quote, presa multipla e viewer 3D)
+
+Per gli scenari in cui serve una configurazione rapida da riga di comando, KomPonGo mette a disposizione tre strumenti dedicati:
+
+1. **Quote in millimetri con angolo fisso** (`python -m verpal.cli quote`). Il comando accetta direttamente le dimensioni numeriche della pedana e delle scatole, applica eventuali override e produce un report strutturato (tabella o JSON) con le misure espresse in millimetri. L'angolo di annotazione resta fisso (0°) e non è modificabile, così da garantire uniformità a manuali d'officina e disegni tecnici.
+2. **Definizione di prese multiple con pinza** (`python -m verpal.cli grip`). È possibile specificare righe, colonne, passo centro-centro, dimensioni delle dita, numero di scatole movimentate, oltre alle finestre utili del tool. Il motore calcola il layout della presa, evidenzia i punti di collisione fra sagome delle dita, tool e pedana e segnala lo sconfinamento oltre lo sbordo ammesso.
+3. **Visualizzatore 3D del bancale** (`python -m verpal.cli viewer`). Il viewer genera in tempo reale uno stack 3D ruotabile tramite angoli polari/azimutali, traslabile lungo gli assi X/Y/Z e avvicinabile/allontanabile lungo la direzione di puntamento con zoom incrementali. Con `--explode-gap` si ottiene l'esploso verticale dei piani, mentre i comandi `--corners`, `--layers` e `--z-step` impostano sequenza e passo dei layer. È possibile richiedere il conteggio degli snap point (`--snap`), visualizzare le posizioni di deposito calcolate in base al sistema di riferimento selezionato (`--origin`/`--axes`) e verificare in tempo reale le condizioni di collisione applicate al piano attivo.
+
+In tutti e tre i casi KomPonGo utilizza gli stessi modelli e repository di progetto descritti in precedenza: l'origine del sistema di riferimento può essere fissata sui vertici o al centro della paletta, con quattro orientazioni possibili degli assi (EN, ES, WN, WS). L'engine dei layer replica anche nella CLI i controlli di sbordatura e i "snap point" magnetici usati dalla GUI, rendendo più semplice posizionare le prese nei punti notevoli (vertici, punti medi e centro) di pedana, tool e sagome di presa.
+
 ## Calcolo automatico e generazione schemi
 - **Algoritmo euristico ricorsivo a 5 blocchi** per il calcolo automatico dello strato ottimizzato.
 - **Generazione paletta multistrato** basata su geometria di strato singola e replicabile.
