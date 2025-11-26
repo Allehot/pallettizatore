@@ -1,3 +1,6 @@
+from pytest import approx
+
+from verpal.annotations import PlacementAnnotator
 from verpal.plc import SiemensPLCExporter
 from verpal.models import Box, Dimensions, LayerPlacement, LayerPlan, Vector3
 
@@ -46,3 +49,15 @@ def test_plc_exporter_serializes_layer(tmp_path):
     assert payload.count("IDX;") == 1
     assert "center" in payload
     assert "edge" in payload
+
+
+def test_plc_exporter_uses_custom_annotator_defaults():
+    plan = _plan()
+    plan.metadata.clear()
+    annotator = PlacementAnnotator(default_approach=110.0, label_offset=15.0)
+    exporter = SiemensPLCExporter(annotator)
+    payload = exporter.to_payload(plan).decode("utf-8")
+    rows = [line for line in payload.splitlines() if line and line[0].isdigit()]
+    first = rows[0].split(";")
+    assert float(first[8]) == approx(110.0)
+    assert float(first[10]) == approx(145.0)

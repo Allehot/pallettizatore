@@ -1,5 +1,7 @@
 import json
 
+from pytest import approx
+
 from verpal import (
     Box,
     Dimensions,
@@ -8,6 +10,7 @@ from verpal import (
     LayerPlacement,
     LayerPlan,
     LayerSequencePlan,
+    PlacementAnnotator,
     PlanExporter,
     Vector3,
 )
@@ -64,3 +67,15 @@ def test_exporter_serializes_sequence(tmp_path):
     assert payload["total_boxes"] == 2
     assert len(payload["layers"]) == 2
     assert payload["interleaves"][0]["id"] == "IL"
+
+
+def test_exporter_honors_custom_label_offset(tmp_path):
+    plan = build_layer()
+    annotator = PlacementAnnotator(
+        default_approach=float(plan.metadata["approach_distance"]),
+        label_offset=25.0,
+    )
+    exporter = PlanExporter(tmp_path, annotator=annotator)
+    payload = json.loads(exporter.to_payload(plan))
+    placement = payload["placements"][0]
+    assert placement["label"]["y"] == approx(120.0)
