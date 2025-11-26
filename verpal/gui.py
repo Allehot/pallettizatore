@@ -67,6 +67,47 @@ class MetricLine:
     value: str
 
 
+def insert_manual_placement(
+    plan: LayerPlan,
+    request: LayerRequest,
+    *,
+    center: Vector3,
+    rotation: int,
+    block: str,
+) -> LayerPlacement:
+    """Insert a manual placement into an existing plan.
+
+    The helper transforms the provided *center* (expressed in the same
+    coordinate space shown by the GUI), appends the new placement to the
+    plan and updates block counters/fill ratio accordingly.
+    """
+
+    transformed = request.reference_frame.transform(
+        center,
+        pallet=request.pallet,
+        overhang_x=request.overhang_x,
+        overhang_y=request.overhang_y,
+    )
+    next_index = 0
+    if plan.placements:
+        next_index = max(placement.sequence_index for placement in plan.placements) + 1
+    box_ref = plan.box or request.box
+    if box_ref is None:
+        raise ValueError("Nessuna scatola associata al piano corrente")
+    placement = LayerPlacement(
+        box_id=box_ref.id,
+        position=Vector3(transformed.x, transformed.y, transformed.z),
+        rotation=int(rotation) % 360,
+        block=block,
+        sequence_index=next_index,
+    )
+    plan.placements.append(placement)
+    plan.blocks[block] = plan.blocks.get(block, 0) + 1
+    plan.box = box_ref
+    plan.fill_ratio = _recompute_fill_ratio(plan, request)
+    return placement
+
+
 _COLOR_PALETTE = [
     "#3c6e71",
     "#f4a259",
@@ -197,6 +238,18 @@ def _color_for_block(block: str, idx: int) -> str:
         return "#3c6e71"
     token = block or str(idx)
     return _COLOR_PALETTE[hash(token) % len(_COLOR_PALETTE)]
+
+
+def _recompute_fill_ratio(plan: LayerPlan, request: LayerRequest) -> float:
+    pallet_area = request.pallet.dimensions.width * request.pallet.dimensions.depth
+    box = plan.box or request.box
+    if pallet_area <= 0 or box is None:
+        return plan.fill_ratio
+    box_area = box.dimensions.width * box.dimensions.depth
+    if box_area <= 0:
+        return plan.fill_ratio
+    used_area = len(plan.placements) * box_area
+    return min(1.0, used_area / pallet_area)
 
 
 def _import_tk() -> tuple[object, object, object, object]:  # pragma: no cover - runtime import
@@ -409,6 +462,7 @@ class PalletGuiApp:
             label_offset=default_label_offset,
         )
         self._annotations: list[PlacementAnnotation] = []
+        self._manual_placements: list[LayerPlacement] = []
 
         tk_module, messagebox, ttk, filedialog = _import_tk()
         Figure, FigureCanvasTkAgg, Poly3DCollection = _import_matplotlib()
@@ -418,7 +472,7 @@ class PalletGuiApp:
         self._Figure = Figure
         self._Poly3DCollection = Poly3DCollection
         DragCanvas = _build_canvas_class(tk_module)
-        self._plc_exporter = SiemensPLCExporter()
+        self._plc_exporter = SiemensPLCExporter(self._annotator)
 
         self.root = tk_module.Tk()
         self.root.title("VerPal - Configuratore Grafico")
@@ -452,6 +506,11 @@ class PalletGuiApp:
         )
         override_text = " ".join(default_approach_overrides or [])
         self.approach_override_var = tk_module.StringVar(value=override_text)
+        self.manual_x_var = tk_module.StringVar(value="0.0")
+        self.manual_y_var = tk_module.StringVar(value="0.0")
+        self.manual_z_var = tk_module.StringVar(value="0.0")
+        self.manual_rotation_var = tk_module.StringVar(value="0")
+        self.manual_block_var = tk_module.StringVar(value="MANUALE")
 
         try:
             self.request, self.plan, self.sequence = self._build_plan()
@@ -494,8 +553,9 @@ class PalletGuiApp:
         right.grid(row=0, column=1, sticky="nsew")
         right.rowconfigure(0, weight=0)
         right.rowconfigure(1, weight=0)
-        right.rowconfigure(2, weight=1)
-        right.rowconfigure(3, weight=0)
+        right.rowconfigure(2, weight=0)
+        right.rowconfigure(3, weight=1)
+        right.rowconfigure(4, weight=0)
         right.columnconfigure(0, weight=1)
 
         config = ttk.LabelFrame(right, text="Dati disponibili nel DB")
@@ -651,8 +711,32 @@ class PalletGuiApp:
             row=4, column=1, sticky="ew", padx=2, pady=(4, 2)
         )
 
+        manual = ttk.LabelFrame(right, text="Inserimento scatola manuale")
+        manual.grid(row=2, column=0, sticky="ew", padx=4, pady=4)
+        for i in range(2):
+            manual.columnconfigure(i, weight=1)
+        ttk.Label(manual, text="Centro X (mm)").grid(row=0, column=0, sticky="w", padx=2, pady=2)
+        ttk.Entry(manual, textvariable=self.manual_x_var).grid(row=0, column=1, sticky="ew", padx=2, pady=2)
+        ttk.Label(manual, text="Centro Y (mm)").grid(row=1, column=0, sticky="w", padx=2, pady=2)
+        ttk.Entry(manual, textvariable=self.manual_y_var).grid(row=1, column=1, sticky="ew", padx=2, pady=2)
+        ttk.Label(manual, text="Quota Z (mm)").grid(row=2, column=0, sticky="w", padx=2, pady=2)
+        ttk.Entry(manual, textvariable=self.manual_z_var).grid(row=2, column=1, sticky="ew", padx=2, pady=2)
+        ttk.Label(manual, text="Rotazione (°)").grid(row=3, column=0, sticky="w", padx=2, pady=2)
+        ttk.Entry(manual, textvariable=self.manual_rotation_var).grid(row=3, column=1, sticky="ew", padx=2, pady=2)
+        ttk.Label(manual, text="Blocco").grid(row=4, column=0, sticky="w", padx=2, pady=2)
+        ttk.Entry(manual, textvariable=self.manual_block_var).grid(row=4, column=1, sticky="ew", padx=2, pady=2)
+        ttk.Button(manual, text="Aggiungi scatola", command=self._add_manual_box).grid(
+            row=5, column=0, sticky="ew", padx=2, pady=(4, 2)
+        )
+        self._remove_manual_button = ttk.Button(
+            manual,
+            text="Rimuovi ultima",
+            command=self._remove_manual_box,
+        )
+        self._remove_manual_button.grid(row=5, column=1, sticky="ew", padx=2, pady=(4, 2))
+
         info_panel = ttk.Frame(right)
-        info_panel.grid(row=2, column=0, sticky="nsew", padx=4)
+        info_panel.grid(row=3, column=0, sticky="nsew", padx=4)
         info_panel.rowconfigure(0, weight=1)
         info_panel.rowconfigure(1, weight=0)
         info_panel.columnconfigure(0, weight=1)
@@ -689,7 +773,7 @@ class PalletGuiApp:
         self.placement_tree.configure(yscrollcommand=tree_scroll.set)
 
         metrics_frame = ttk.LabelFrame(right, text="Metriche e export")
-        metrics_frame.grid(row=3, column=0, sticky="ew", padx=4, pady=4)
+        metrics_frame.grid(row=4, column=0, sticky="ew", padx=4, pady=4)
         metrics_frame.columnconfigure(0, weight=1)
         metrics_frame.columnconfigure(1, weight=1)
         self.metrics_var = tk_module.StringVar()
@@ -719,6 +803,7 @@ class PalletGuiApp:
         self._refresh_annotations()
         self._refresh_metrics()
         self._render_3d()
+        self._update_manual_controls()
 
     def run(self) -> None:  # pragma: no cover - UI loop
         self.root.mainloop()
@@ -852,6 +937,8 @@ class PalletGuiApp:
             default_approach=distance,
             label_offset=label_offset,
         )
+        if hasattr(self, "_plc_exporter"):
+            self._plc_exporter.annotator = self._annotator
         if sequence is not None:
             sequence.metadata["approach_distance"] = f"{distance:.2f}"
             if custom_direction:
@@ -912,18 +999,103 @@ class PalletGuiApp:
         self.request = request
         self.plan = plan
         self.sequence = sequence
+        self._manual_placements.clear()
         self.canvas.request = request
         self.canvas.plan = plan
         self.canvas.refresh()
         self._refresh_annotations()
         self._refresh_metrics()
         self._render_3d()
+        self._update_manual_controls()
         self.status_var.set(
             "Schema aggiornato per pallet {p} e scatola {b}".format(
                 p=self.request.pallet.id,
                 b=self.request.box.id,
             )
         )
+
+    def _add_manual_box(self) -> None:  # pragma: no cover - UI callback
+        if self.plan.box is None and self.request.box is None:
+            self._messagebox.showerror(
+                "Inserimento manuale",
+                "Seleziona una scatola dal database prima di inserire manualmente.",
+            )
+            return
+        try:
+            x = self._parse_float(self.manual_x_var.get())
+            y = self._parse_float(self.manual_y_var.get())
+            z_value = self._parse_float(self.manual_z_var.get())
+        except ValueError:
+            self._messagebox.showerror(
+                "Inserimento manuale", "Coordinate non valide. Usa valori numerici."
+            )
+            return
+        if x is None or y is None:
+            self._messagebox.showerror(
+                "Inserimento manuale",
+                "Specificare almeno X e Y per posizionare la scatola.",
+            )
+            return
+        z = z_value if z_value is not None else _layer_base(self.plan)
+        rotation_raw = self.manual_rotation_var.get()
+        try:
+            rotation = int(float(rotation_raw or 0))
+        except ValueError:
+            self._messagebox.showerror(
+                "Inserimento manuale",
+                "Rotazione non valida. Inserisci un valore numerico.",
+            )
+            return
+        block_name = (self.manual_block_var.get() or "MANUALE").strip() or "MANUALE"
+        placement = insert_manual_placement(
+            self.plan,
+            self.request,
+            center=Vector3(x=x, y=y, z=z),
+            rotation=rotation,
+            block=block_name,
+        )
+        self._manual_placements.append(placement)
+        self.canvas.refresh()
+        self._refresh_annotations()
+        self._refresh_metrics()
+        self._render_3d()
+        self._update_manual_controls()
+        self.status_var.set(
+            "Scatola manuale aggiunta in X={x:.1f} Y={y:.1f} Z={z:.1f}".format(
+                x=x,
+                y=y,
+                z=z,
+            )
+        )
+
+    def _remove_manual_box(self) -> None:  # pragma: no cover - UI callback
+        if not self._manual_placements:
+            return
+        placement = self._manual_placements.pop()
+        if placement in self.plan.placements:
+            self.plan.placements.remove(placement)
+        block = (placement.block or "").strip()
+        if block:
+            remaining = self.plan.blocks.get(block, 0) - 1
+            if remaining > 0:
+                self.plan.blocks[block] = remaining
+            else:
+                self.plan.blocks.pop(block, None)
+        self.plan.fill_ratio = _recompute_fill_ratio(self.plan, self.request)
+        self.canvas.refresh()
+        self._refresh_annotations()
+        self._refresh_metrics()
+        self._render_3d()
+        self._update_manual_controls()
+        self.status_var.set("Ultima scatola manuale rimossa")
+
+    def _update_manual_controls(self) -> None:
+        if not hasattr(self, "_remove_manual_button"):
+            return
+        if self._manual_placements:
+            self._remove_manual_button.state(["!disabled"])
+        else:
+            self._remove_manual_button.state(["disabled"])
 
     def _find_by_id(self, collection, item_id: str, label: str):
         for item in collection:
@@ -1038,7 +1210,7 @@ class PalletGuiApp:
             return
         path = Path(filename)
         target = self._active_plan()
-        exporter = PlanExporter(base_path=path.parent)
+        exporter = PlanExporter(base_path=path.parent, annotator=self._annotator)
         exporter.to_file(target, path.name)
         self._messagebox.showinfo("Export JSON", f"File salvato in {path}")
         self.status_var.set(f"JSON salvato in {path}")
@@ -1065,6 +1237,7 @@ __all__ = [
     "LayerViewModel",
     "HeightRow",
     "MetricLine",
+    "insert_manual_placement",
     "build_layer_view_model",
     "compute_height_report",
     "build_metric_summary",
